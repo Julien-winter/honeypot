@@ -122,7 +122,7 @@ async function findOrCreateHoneypotChannel(api: API | API2, guild: GatewayGuildC
     const newChannel = await api.guilds.createChannel(guild.id, {
         name: `h${obfuscateText("oneypot", 0.3)}`,
         type: ChannelType.GuildText,
-        position: guild.channels.length + 1,
+        position: 0,
         permission_overwrites: (!everyoneHasPerms && botHasPerms) ? [
             {
                 id: guild.id,
@@ -165,7 +165,7 @@ async function postWarning(api: API | API2, channelId: string, applicationId: st
 }
 
 async function sendIntroMessage(api: API | API2, redis: Bun.RedisClient | undefined, channelId: string) {
-    const commands = redis ? await getCommandIdCache(redis) : null;
+    const commands = await getCommandIdCache(redis);
     function getCommandMention(commandName: string) {
         const commandId = commands?.[commandName];
         if (!commandId) return `\`/${commandName}\``;

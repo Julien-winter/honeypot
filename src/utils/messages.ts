@@ -1,4 +1,4 @@
-import { type RESTPostAPIChannelMessageJSONBody, MessageFlags, ComponentType, ButtonStyle, type APIUser, type APIComponentInContainer, type PartialAPIMessageInteractionGuildMember, type APIThumbnailComponent } from "discord-api-types/v10";
+import { type RESTPostAPIChannelMessageJSONBody, MessageFlags, ComponentType, ButtonStyle, PermissionFlagsBits, type APIUser, type APIComponentInContainer, type PartialAPIMessageInteractionGuildMember, type APIThumbnailComponent } from "discord-api-types/v10";
 import type { HoneypotConfig } from "./db";
 import { getDiscordDate, getDiscordDateMention } from "./tools";
 import { CUSTOM_EMOJI_ID } from "./constants";
@@ -8,6 +8,61 @@ const honeypotThumbnail: APIThumbnailComponent = {
   media: {
     url: "https://honeypot.riskymh.dev/honeypot.png"
   }
+}
+
+// Use this instance's own links instead of the official bot's, so self-hosted
+// copies don't advertise someone else's bot. All overridable via env.
+function getOwnApplicationId(): string {
+  const token = process.env.DISCORD_TOKEN || "";
+  try {
+    const id = atob(token.split(".")[0]!);
+    if (/^\d+$/.test(id)) return id;
+  } catch { /* ignore malformed tokens */ }
+  return "";
+}
+export function getInviteUrl(): string {
+  if (process.env.INVITE_URL) return process.env.INVITE_URL;
+  const appId = getOwnApplicationId() || "1450060292716494940";
+  return `https://discord.com/oauth2/authorize?client_id=${appId}&permissions=${invitePermissions}&scope=bot+applications.commands`;
+}
+// Minimal permission set the bot needs (ban, manage channels/messages, read/send, invite, timeout).
+const invitePermissions = (
+  PermissionFlagsBits.CreateInstantInvite |
+  PermissionFlagsBits.BanMembers |
+  PermissionFlagsBits.ManageChannels |
+  PermissionFlagsBits.AddReactions |
+  PermissionFlagsBits.ViewChannel |
+  PermissionFlagsBits.SendMessages |
+  PermissionFlagsBits.ManageMessages |
+  PermissionFlagsBits.EmbedLinks |
+  PermissionFlagsBits.AttachFiles |
+  PermissionFlagsBits.ReadMessageHistory |
+  PermissionFlagsBits.ModerateMembers
+).toString();
+// Public base URL of this instance (e.g. http://1.2.3.4:3000), if detectable.
+function getPublicBaseUrl(): string | null {
+  if (process.env.SITE_URL) return process.env.SITE_URL.replace(/\/$/, "");
+  const host = process.env.SERVER_IP || "";
+  const port = process.env.STATS_PORT || process.env.SERVER_PORT || process.env.PORT || "";
+  if (host && host !== "0.0.0.0" && port) return `http://${host}:${port}`;
+  return null;
+}
+export function getDocsUrl(): string {
+  if (process.env.DOCS_URL) return process.env.DOCS_URL;
+  const base = getPublicBaseUrl();
+  return base ? `${base}/docs` : "https://honeypot.riskymh.dev/docs";
+}
+export function getStatsPageUrl(): string {
+  if (process.env.STATS_PAGE_URL) return process.env.STATS_PAGE_URL;
+  return getPublicBaseUrl() ?? "https://honeypot.riskymh.dev/#stats";
+}
+export function getSiteUrl(): string {
+  return getPublicBaseUrl() ?? "https://honeypot.riskymh.dev";
+}
+export function getDashboardUrl(): string {
+  if (process.env.DASHBOARD_URL) return process.env.DASHBOARD_URL;
+  const base = getPublicBaseUrl();
+  return base ? `${base}/dashboard` : "https://honeypot.riskymh.dev/#stats";
 }
 
 export function honeypotWarningMessage(
@@ -37,6 +92,7 @@ export function honeypotWarningMessage(
               type: ComponentType.TextDisplay,
               content: messageText?.replace(/\{\{action(:text)?\}\}/g, actionText)
                 || `## DO NOT SEND MESSAGES IN THIS CHANNEL\n\nThis channel is used to catch spam bots. Any messages sent here will result in **${actionText}**.`
+                + (moderatedCount > 0 ? `\n\n🍯 Already caught **${moderatedCount.toLocaleString()}** spam accounts here.` : "")
             }],
             accessory: honeypotThumbnail
           } as const : null,
@@ -255,22 +311,22 @@ export function statsMessage(globalStatsText: string, serverStatsText: string | 
             components: [
               {
                 type: ComponentType.Button,
-                url: "https://discord.com/oauth2/authorize?client_id=1450060292716494940",
+                url: getInviteUrl(),
                 style: ButtonStyle.Link,
                 label: "Invite Bot",
                 emoji: { name: "honeypot", id: CUSTOM_EMOJI_ID }
               },
               {
                 type: ComponentType.Button,
-                url: "https://honeypot.riskymh.dev/docs",
+                url: getDocsUrl(),
                 style: ButtonStyle.Link,
                 label: "Documentation"
               },
               {
                 type: ComponentType.Button,
-                url: "https://honeypot.riskymh.dev",
+                url: getDashboardUrl(),
                 style: ButtonStyle.Link,
-                label: "honeypot.riskymh.dev"
+                label: "Dashboard"
               },
             ]
           },
@@ -312,12 +368,12 @@ export function statsMessage(globalStatsText: string, serverStatsText: string | 
                 ][Math.floor(Math.random() * 4)]}`,
               }
             ],
-            accessory: {
-              type: ComponentType.Button,
-              url: "https://honeypot.riskymh.dev/#stats",
-              style: ButtonStyle.Link,
-              label: "Live Stats"
-            }
+                accessory: {
+                  type: ComponentType.Button,
+                  url: getStatsPageUrl(),
+                  style: ButtonStyle.Link,
+                  label: "Live Stats"
+                }
           },
         ],
       },

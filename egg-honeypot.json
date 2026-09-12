@@ -1,0 +1,173 @@
+{
+    "_comment": "Pterodactyl egg for the Honeypot Discord bot (https://github.com/RiskyMH/honeypot). Import via Admin > Nests > Import Egg. Based on the official generic Bun egg.",
+    "meta": {
+        "version": "PTDL_v2",
+        "update_url": null
+    },
+    "exported_at": "2026-09-12T00:00:00+02:00",
+    "name": "Honeypot Discord Bot",
+    "author": "RiskyMH/honeypot",
+    "description": "Honeypot Discord bot: automatically catches and removes spam bots via a dedicated honeypot channel. Needs only a DISCORD_TOKEN, no ports required.",
+    "features": null,
+    "docker_images": {
+        "Bun Latest": "ghcr.io/parkervcp/yolks:bun_latest",
+        "Bun Canary": "ghcr.io/parkervcp/yolks:bun_canary"
+    },
+    "file_denylist": [],
+    "startup": "if [[ -d .git ]] && [[ {{AUTO_UPDATE}} == \"1\" ]]; then git pull; fi; if [ -f /home/container/package.json ]; then bun install; fi; bun src/bot.ts",
+    "config": {
+        "files": "{}",
+        "startup": "{\r\n    \"done\": [\r\n        \"is ready!\"\r\n    ]\r\n}",
+        "logs": "{}",
+        "stop": "^^C"
+    },
+    "scripts": {
+        "installation": {
+            "script": "#!/bin/bash\n# Honeypot Discord Bot - Installation Script\n#\n# Server Files: /mnt/server\napt update\napt install -y git curl unzip\nmkdir -p /mnt/server\ncd /mnt/server\n\nif [ \"${USER_UPLOAD}\" == \"true\" ] || [ \"${USER_UPLOAD}\" == \"1\" ]; then\n    echo -e \"User upload mode, skipping install.\"\n    exit 0\nfi\n\n## add git ending if it is not on the address\nif [[ ${GIT_ADDRESS} != *.git ]]; then\n    GIT_ADDRESS=${GIT_ADDRESS}.git\nfi\n\n## pull repo or update existing checkout\nif [ \"$(ls -A /mnt/server)\" ]; then\n    echo -e \"/mnt/server directory is not empty.\"\n    if [ -d .git ]; then\n        echo -e \"Pulling latest changes.\"\n        git pull\n    else\n        echo -e \"Files found with no git config, leaving untouched to not break anything.\"\n        exit 10\n    fi\nelse\n    echo -e \"Cloning Honeypot repository.\"\n    if [ -z ${BRANCH} ]; then\n        echo -e \"Cloning default branch.\"\n        git clone ${GIT_ADDRESS} .\n    else\n        echo -e \"Cloning branch ${BRANCH}.\"\n        git clone --single-branch --branch ${BRANCH} ${GIT_ADDRESS} .\n    fi\nfi\n\n## make sure bun exists in the installer container\nif ! command -v bun >/dev/null 2>&1; then\n    echo -e \"Installing Bun.\"\n    curl -fsSL https://bun.sh/install | BUN_INSTALL=/usr/local bash\nfi\n\necho -e \"Installing dependencies.\"\nbun install --production\n\necho \"-----------------------------------------\"\necho \"Installation completed.\"\necho \"Set your DISCORD_TOKEN variable, then start the server.\"\necho \"-----------------------------------------\"",
+            "container": "ghcr.io/parkervcp/installers:debian",
+            "entrypoint": "bash"
+        }
+    },
+    "variables": [
+        {
+            "name": "Discord Token",
+            "description": "Discord bot token (REQUIRED). Get it from the Discord Developer Portal.",
+            "env_variable": "DISCORD_TOKEN",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Database URL",
+            "description": "SQLite or Postgres connection string. Defaults to a local sqlite file (persists in server files).",
+            "env_variable": "DATABASE_URL",
+            "default_value": "sqlite://honeypot.sqlite",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Redis URL",
+            "description": "Optional. Only needed for sharded/websocket proxy mode.",
+            "env_variable": "REDIS_URL",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Has Message Intent",
+            "description": "Optional. Set to 1 if your bot has the message content intent enabled.",
+            "env_variable": "HAS_MESSAGE_INTENT",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Git Repository Address",
+            "description": "The Git repository to clone.",
+            "env_variable": "GIT_ADDRESS",
+            "default_value": "https://github.com/RiskyMH/honeypot.git",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Git Branch",
+            "description": "The Git branch to install (empty = default branch).",
+            "env_variable": "BRANCH",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string",
+            "field_type": "text"
+        },
+        {
+            "name": "User Uploaded Files",
+            "description": "Skip the install steps if you upload files yourself.\r\n0 = false (default)\r\n1 = true",
+            "env_variable": "USER_UPLOAD",
+            "default_value": "0",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|boolean",
+            "field_type": "text"
+        },
+        {
+            "name": "Auto Update",
+            "description": "Pull the latest files on startup when using a Git repository.\r\n0 = false (default)\r\n1 = true",
+            "env_variable": "AUTO_UPDATE",
+            "default_value": "0",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "required|boolean",
+            "field_type": "text"
+        },
+        {
+            "name": "Has Message Intent",
+            "description": "Set to 1 if Message Content Intent is enabled in the Developer Portal (enables forward-message and ensure-msg-delete).",
+            "env_variable": "HAS_MESSAGE_INTENT",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Stats Port",
+            "description": "Port for the stats dashboard and health endpoint. Falls back to the panel allocation port automatically.",
+            "env_variable": "STATS_PORT",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Discord Client Secret",
+            "description": "Only needed for the mod dashboard login (Developer Portal > General Information).",
+            "env_variable": "DISCORD_CLIENT_SECRET",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Public URL",
+            "description": "Public base URL of this server, e.g. https://stats.example.com. Only needed for the mod dashboard login (must be https).",
+            "env_variable": "PUBLIC_URL",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Invite URL",
+            "description": "Custom invite link shown by /stats. Defaults to this bot's own invite link.",
+            "env_variable": "INVITE_URL",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string",
+            "field_type": "text"
+        },
+        {
+            "name": "Stats Page URL",
+            "description": "Link target of the Live Stats button. Defaults to the official stats page.",
+            "env_variable": "STATS_PAGE_URL",
+            "default_value": "",
+            "user_viewable": true,
+            "user_editable": true,
+            "rules": "nullable|string",
+            "field_type": "text"
+        }
+    ]
+}

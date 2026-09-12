@@ -601,7 +601,7 @@ const handler: EventHandler<GatewayDispatchEvents.InteractionCreate> = {
                 }
 
                 await api.interactions.reply(interaction.id, interaction.token, {
-                    flags: MessageFlags.IsComponentsV2,
+                    flags: MessageFlags.IsComponentsV2 | MessageFlags.Ephemeral,
                     components: [
                         {
                             type: ComponentType.TextDisplay,
@@ -766,9 +766,7 @@ const handler: EventHandler<GatewayDispatchEvents.InteractionCreate> = {
 
                 const msg = statsMessage(globalStatsMsg, serverStatMsg, userStatMsg)
                 await api.interactions.reply(interaction.id, interaction.token,
-                    interaction.type === InteractionType.MessageComponent
-                        ? { ...msg, flags: MessageFlags.Ephemeral | (msg.flags || 0) }
-                        : msg
+                    { ...msg, flags: MessageFlags.Ephemeral | (msg.flags || 0) }
                 );
             }
 
@@ -895,6 +893,14 @@ ${roleInfo.map(r => `-# - <@&${r.id}> ${r.isUser ? " **[user]**" : ""}${r.isBot 
 
             // a way to see if the templates work for custom messages, without having to trigger the honeypot
             else if (guildId && interaction.type === InteractionType.MessageComponent && interaction.data.custom_id.startsWith("preview_message:")) {
+                if (!interaction.member?.permissions || !hasPermission(BigInt(interaction.member.permissions), PermissionFlagsBits.BanMembers)) {
+                    await api.interactions.reply(interaction.id, interaction.token, {
+                        content: "You need the Ban Members permission to preview messages.",
+                        allowed_mentions: {},
+                        flags: MessageFlags.Ephemeral,
+                    });
+                    return;
+                }
                 const [type, id] = interaction.data.custom_id.split(":").slice(1);
                 let messageContent: string | null = null;
                 if (id?.startsWith("#")) {

@@ -8,6 +8,8 @@ import { commandsPayload } from "./utils/commands";
 import { runCrons } from "./cron/crons";
 import initialPresence from "./utils/initial-presence";
 import { setCommandIdCache } from "./utils/cache";
+import { startStatsServer } from "./stats-server";
+import { startPresenceRotation } from "./utils/presence";
 
 const token = process.env.DISCORD_TOKEN;
 if (!token) throw new Error("DISCORD_TOKEN environment variable not set.");
@@ -16,6 +18,7 @@ let applicationId = atob(token.split(".")[0]!); // i bet most didn’t know this
 process.title = "Honeypot Bot (riskymh.dev)";
 
 await db.initDb();
+startStatsServer();
 const redis = process.env.REDIS_URL ? new Bun.RedisClient(process.env.REDIS_URL) : null;
 
 process.on('uncaughtException', (err) => {
@@ -59,5 +62,6 @@ client.on(GatewayDispatchEvents.Ready, (c) => {
 });
 
 gateway.connect();
+startPresenceRotation(gateway);
 
 runCrons(client.api, db, redis || undefined);

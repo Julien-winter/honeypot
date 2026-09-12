@@ -120,7 +120,7 @@ const onMessage = async (
         }
 
         if (!failed && !permissionSkip) {
-            await db.logModerateEvent(guildId, userId, matchedChannel.channel_id);
+            await db.logModerateEvent(guildId, userId, matchedChannel.channel_id, config.action === 'ban' ? 'ban' : 'softban', "Posted in honeypot channel");
             redis?.publish("moderate_event", "+1");
 
             const id = messageId || threadId || null;

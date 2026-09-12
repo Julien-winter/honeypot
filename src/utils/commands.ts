@@ -28,7 +28,7 @@ export const commandsPayload: RESTPutAPIApplicationCommandsJSONBody = [
         description: "See statistics for all servers using honeypot",
         type: ApplicationCommandType.ChatInput,
         options: [],
-        contexts: [InteractionContextType.BotDM],
+        contexts: [InteractionContextType.BotDM, InteractionContextType.Guild],
     },
 ]
 

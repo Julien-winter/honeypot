@@ -117,6 +117,22 @@ CREATE INDEX IF NOT EXISTS idx_honeypot_events_stats ON honeypot_events(timestam
       await tx`CREATE INDEX IF NOT EXISTS idx_honeypot_events_global_timeline ON honeypot_events(timestamp, guild_id)`;
       await tx`CREATE INDEX IF NOT EXISTS idx_honeypot_events_guild_stats ON honeypot_events(guild_id, timestamp)`;
     }
+  },
+  {
+    version: 5,
+    name: "moderation details",
+    up: async (tx) => {
+      if (db.options.adapter === "sqlite" || db.options.adapter === "postgres") {
+        await tx`ALTER TABLE honeypot_events ADD COLUMN action TEXT DEFAULT 'softban'`;
+        await tx`ALTER TABLE honeypot_events ADD COLUMN reason TEXT`;
+      } else if (db.options.adapter === "mysql" || db.options.adapter === "mariadb") {
+        await tx`ALTER TABLE honeypot_events ADD COLUMN action VARCHAR(20) DEFAULT 'softban'`;
+        await tx`ALTER TABLE honeypot_events ADD COLUMN reason TEXT`;
+      } else {
+        throw new Error(`Unsupported database adapter: ${db.options.adapter}`);
+      }
+      await tx`CREATE INDEX IF NOT EXISTS idx_honeypot_events_guild_action ON honeypot_events(guild_id, action)`;
+    }
   }
 ];
 
@@ -231,8 +247,39 @@ export async function deleteConfig(guild_id: string) {
   await db`DELETE FROM honeypot_config WHERE guild_id = ${guild_id}`;
 }
 
-export async function logModerateEvent(guild_id: string, user_id: string, channel_id?: string) {
-  await db`INSERT INTO honeypot_events (guild_id, user_id, channel_id, timestamp) VALUES (${guild_id}, ${user_id}, ${channel_id ?? null}, ${Math.floor(Date.now() / 1000)})`;
+export async function pingDb(): Promise<void> {
+  await db`SELECT 1`;
+}
+
+export async function logModerateEvent(guild_id: string, user_id: string, channel_id?: string, action: 'ban' | 'softban' = 'softban', reason?: string | null) {
+  await db`INSERT INTO honeypot_events (guild_id, user_id, channel_id, timestamp, action, reason) VALUES (${guild_id}, ${user_id}, ${channel_id ?? null}, ${Math.floor(Date.now() / 1000)}, ${action}, ${reason ?? null})`;
+}
+
+export async function getRecentEvents(guild_id: string, limit: number = 25): Promise<{ id: number; user_id: string; channel_id: string | null; timestamp: number; action: string | null; reason: string | null }[]> {
+  const safeLimit = Math.min(Math.max(Math.floor(limit) || 25, 1), 100);
+  const rows = await db`SELECT id, CAST(user_id AS VARCHAR(20)) AS user_id, CAST(channel_id AS VARCHAR(20)) AS channel_id, timestamp, action, reason FROM honeypot_events WHERE guild_id = ${guild_id} ORDER BY id DESC LIMIT ${safeLimit}`;
+  return rows.map((r: any) => ({
+    id: Number(r.id),
+    user_id: r.user_id?.toString() ?? "",
+    channel_id: r.channel_id?.toString() ?? null,
+    timestamp: Number(r.timestamp),
+    action: r.action ?? null,
+    reason: r.reason ?? null,
+  }));
+}
+
+export async function getGuildActionCounts(guild_id: string): Promise<{ ban: number; softban: number }> {  const rows = await db`SELECT action, COUNT(*) as count FROM honeypot_events WHERE guild_id = ${guild_id} GROUP BY action`;
+  let ban = 0, softban = 0;
+  for (const r of rows as any[]) {
+    if (r.action === 'ban') ban = Number(r.count);
+    else softban += Number(r.count);
+  }
+  return { ban, softban };
+}
+
+export async function getTotalHoneypotChannels(): Promise<number> {
+  const [row] = await db`SELECT COUNT(*) as count FROM honeypot_channels`;
+  return Number(row.count);
 }
 
 export async function getModeratedCount(guild_id: string, channel_id?: string | null): Promise<number> {
@@ -391,6 +438,7 @@ export async function getFullStats(): Promise<{
   moderations: number;
   last7dModerations: number;
   last7dEngagedGuilds: number;
+  moderationsByAction: { ban: number; softban: number };
   dailyStats: { date: string; moderations: number; engagedGuilds: number; }[];
 }> {
   const now = new Date();
@@ -402,7 +450,7 @@ export async function getFullStats(): Promise<{
   const sevenDaysAgoSec = todayStartSec - (7 * 24 * 60 * 60);
   const fourteenDaysAgoSec = todayStartSec - (14 * 24 * 60 * 60);
 
-  const [[meta], events] = await Promise.all([
+  const [[meta], events, byActionRows] = await Promise.all([
     db`
       SELECT
         (SELECT COUNT(*) FROM honeypot_config) AS guilds,
@@ -413,6 +461,11 @@ export async function getFullStats(): Promise<{
       FROM honeypot_events
       WHERE timestamp >= ${fourteenDaysAgoSec}
       ORDER BY timestamp ASC;
+    `,
+    db`
+      SELECT action, COUNT(*) AS count
+      FROM honeypot_events
+      GROUP BY action;
     `,
   ]);
 
@@ -454,6 +507,14 @@ export async function getFullStats(): Promise<{
     moderations: Number(meta.moderations),
     last7dModerations,
     last7dEngagedGuilds: last7dGuilds.size,
+    moderationsByAction: (byActionRows as any[]).reduce(
+      (acc, r) => {
+        if (r.action === 'ban') acc.ban = Number(r.count);
+        else acc.softban += Number(r.count);
+        return acc;
+      },
+      { ban: 0, softban: 0 }
+    ),
     dailyStats: Array.from(dailyMap.entries())
       .map(([dayTimestamp, v]) => ({
         date: new Date(dayTimestamp * 1000).toISOString().split('T')[0]!,
