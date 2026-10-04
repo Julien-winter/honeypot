@@ -43,19 +43,28 @@ export type PublicStats = {
 
 let cache: { at: number; data: PublicStats } | null = null;
 const CACHE_MS = 60_000;
+let cacheInflight: Promise<PublicStats> | null = null;
 
 let communityCache: { at: number; data: PublicStats["community"] } | null = null;
 const COMMUNITY_CACHE_MS = 5 * 60_000;
+/** After a failed widget/invite fetch, do not retry before this timestamp. */
+let communityFailUntil = 0;
+const COMMUNITY_RETRY_MS = 60_000;
 const COMMUNITY_GUILD_ID = process.env.COMMUNITY_GUILD_ID || "1546167772831285271";
 
 async function getCommunity(): Promise<PublicStats["community"]> {
     const now = Date.now();
+    if (now < communityFailUntil) return communityCache?.data ?? null;
     if (communityCache && now - communityCache.at < COMMUNITY_CACHE_MS) return communityCache.data;
     try {
         const res = await fetch(`https://discord.com/api/guilds/${COMMUNITY_GUILD_ID}/widget.json`, {
             signal: AbortSignal.timeout(10_000),
         });
-        if (!res.ok) throw new Error(`widget ${res.status}`);
+        if (!res.ok) {
+            const retryAfterSec = Number(res.headers.get("retry-after")) || 0;
+            communityFailUntil = now + (retryAfterSec > 0 ? Math.min(retryAfterSec, 900) * 1000 : COMMUNITY_RETRY_MS);
+            throw new Error(`widget ${res.status}`);
+        }
         const w = await res.json() as {
             name?: string; presence_count?: number; instant_invite?: string;
             members?: { username?: string; status?: string; avatar_url?: string }[];
@@ -96,8 +105,10 @@ async function getCommunity(): Promise<PublicStats["community"]> {
             members,
         };
         communityCache = { at: now, data };
+        communityFailUntil = 0;
         return data;
     } catch (err) {
+        if (communityFailUntil <= now) communityFailUntil = now + COMMUNITY_RETRY_MS;
         console.error(`[stats] community widget failed: ${err}`);
         return communityCache?.data ?? null;
     }
@@ -106,7 +117,12 @@ async function getCommunity(): Promise<PublicStats["community"]> {
 export async function getPublicStats(): Promise<PublicStats> {
     const now = Date.now();
     if (cache && now - cache.at < CACHE_MS) return cache.data;
+    if (cacheInflight) return cacheInflight;
+    cacheInflight = buildPublicStats().finally(() => { cacheInflight = null; });
+    return cacheInflight;
+}
 
+async function buildPublicStats(): Promise<PublicStats> {
     const full = await db.getFullStats();
     const uptimeSec = Math.floor(process.uptime());
     const totalChannels = await db.getTotalHoneypotChannels().catch(() => 0);
@@ -132,7 +148,7 @@ export async function getPublicStats(): Promise<PublicStats> {
         history,
         updatedAt: new Date().toISOString(),
     };
-    cache = { at: now, data };
+    cache = { at: Date.now(), data };
     return data;
 }
 
@@ -143,7 +159,10 @@ export function startStatsServer(api?: API | API2 | null): number {
     Bun.serve({
         port,
         async fetch(req) {
-            const url = new URL(req.url);
+            const url = (() => {
+                try { return new URL(req.url); }
+                catch { return new URL(req.url || "/", "http://localhost"); }
+            })();
             const dashboardRes = await handleDashboard(req, url, botApi);
             if (dashboardRes) return dashboardRes;
             if (url.pathname === "/health" || url.pathname === "/live") {

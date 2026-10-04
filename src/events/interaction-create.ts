@@ -7,6 +7,7 @@ import getBadWords from "../utils/bad-words.macro" with { type: "macro" };
 import { HAS_MESSAGE_INTENT } from "../utils/constants";
 import { getCommandIdCache, getGuildInfo, removeFromDeleteMessageCache, setSubscribedChannelCache } from "../utils/cache";
 import { getDocsUrl } from "../utils/messages";
+import { handleSecurityInteraction } from "../security/interactions";
 import { DiscordAPIError } from "@discordjs/rest";
 import { styleText } from "node:util";
 import { getDiscordDate, hasPermission, trim } from "../utils/tools";
@@ -34,6 +35,7 @@ const handler: EventHandler<GatewayDispatchEvents.InteractionCreate> = {
                 const config: HoneypotConfig = result?.config ?? {
                     guild_id: guildId,
                     name: null,
+                    icon: null,
                     log_channel_id: null,
                     action: 'softban',
                     experiments: []
@@ -150,6 +152,11 @@ const handler: EventHandler<GatewayDispatchEvents.InteractionCreate> = {
                     ]
                 };
                 await api.interactions.createModal(interaction.id, interaction.token, modal);
+                return;
+            }
+
+            // security modules: /security, /backup, quarantine & restore buttons
+            else if (guildId && await handleSecurityInteraction(interaction, api, redis, db, userContextHash)) {
                 return;
             }
 
@@ -764,10 +771,12 @@ const handler: EventHandler<GatewayDispatchEvents.InteractionCreate> = {
                 const { totalGuilds, totalModerated } = await db.getStats()
 
                 if (guildId) {
-                    const [guildStats, channels, recentModerations] = await Promise.all([
+                    const [guildStats, channels, recentModerations, securityConfig, securityCounts] = await Promise.all([
                         db.getGuildStats(guildId),
                         db.getChannels(guildId),
                         db.getRecentGuildModerationCount(guildId, 7),
+                        db.getSecurityConfig(guildId),
+                        db.getGuildSecurityCounts(guildId),
                     ]);
 
                     const channelLessStats = guildStats.find(s => s.channel_id === null)?.moderatedCount;
@@ -784,15 +793,27 @@ const handler: EventHandler<GatewayDispatchEvents.InteractionCreate> = {
                     if (recentModerations > 0) {
                         serverStatMsg += `\nModerated in last 7 days: \`${recentModerations.toLocaleString()}\``;
                     }
+                    if (securityConfig) {
+                        const active = (["anti_nuke", "quarantine", "anti_spam", "anti_phishing", "event_log", "backups"] as const)
+                            .filter(module => securityConfig[module]);
+                        serverStatMsg += `\nSecurity: ${active.length > 0 ? active.map(module => `\`${module}\``).join(", ") : "*all off*"}`;
+                    }
+                    const incidents = Object.entries(securityCounts).filter(([, count]) => count > 0);
+                    if (incidents.length > 0) {
+                        serverStatMsg += `\nSecurity incidents: ${incidents.map(([type, count]) => `\`${type}\`: \`${count.toLocaleString()}\``).join(", ")}`;
+                    }
                 } else {
                     const userId = (interaction.user || interaction.member?.user)?.id
                     const userModeratedCount = userId ? await db.getUserModeratedCount(userId) : 0;
                     userStatMsg = `Times you've been #honeypot'd: \`${userModeratedCount.toLocaleString()}\``
                 }
 
+                const securityTotals = await db.getSecurityEventTotals();
+                const totalIncidents = Object.values(securityTotals).reduce((acc, count) => acc + count, 0);
                 const globalStatsMsg =
                     `Total servers: \`${totalGuilds.toLocaleString()}\`\n` +
-                    `Total moderations: \`${totalModerated.toLocaleString()}\``;
+                    `Total moderations: \`${totalModerated.toLocaleString()}\`` +
+                    (totalIncidents > 0 ? `\nSecurity incidents: \`${totalIncidents.toLocaleString()}\`` : "");
 
                 const msg = statsMessage(globalStatsMsg, serverStatMsg, userStatMsg)
                 await api.interactions.reply(interaction.id, interaction.token,

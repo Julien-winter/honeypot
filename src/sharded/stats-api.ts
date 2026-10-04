@@ -131,7 +131,7 @@ function scheduleNextPublish() {
     }, msUntilNext);
 }
 
-redisPubSub.subscribe(["guild_count", "moderate_event"], async (message) => {
+redisPubSub.subscribe(["guild_count", "moderate_event", "security_event"], async (message) => {
     if (server.subscriberCount("stats_update") === 0) {
         cacheResult = null;
         cacheTimestamp = 0;

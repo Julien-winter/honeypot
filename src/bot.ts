@@ -10,6 +10,7 @@ import initialPresence from "./utils/initial-presence";
 import { setCommandIdCache } from "./utils/cache";
 import { startStatsServer } from "./stats-server";
 import { startPresenceRotation } from "./utils/presence";
+import { HAS_MESSAGE_INTENT } from "./utils/constants";
 
 const token = process.env.DISCORD_TOKEN;
 if (!token) throw new Error("DISCORD_TOKEN environment variable not set.");
@@ -54,7 +55,7 @@ async function fetchGatewayWithRetry(): Promise<RESTGetAPIGatewayBotResult> {
 }
 const gateway = new WebSocketManager({
     token,
-    intents: GatewayIntentBits.Guilds | GatewayIntentBits.GuildMessages | GatewayIntentBits.GuildMembers,
+    intents: GatewayIntentBits.Guilds | GatewayIntentBits.GuildMessages | GatewayIntentBits.GuildMembers | (HAS_MESSAGE_INTENT ? GatewayIntentBits.MessageContent : 0),
     fetchGatewayInformation: fetchGatewayWithRetry,
     shardCount: null,
     initialPresence,

@@ -53,7 +53,8 @@ let stopCrons = null as null | (() => Promise<boolean>);
 const listen = async () => {
     const wsConfig = JSON.stringify({
         events: Object.keys(eventMap),
-        messageEvents: { sendBotEvents: false },
+        // bot/webhook messages are noisy - only forward them when anti-phishing should scan them too
+        messageEvents: { sendBotEvents: process.env.SECURITY_BOT_MESSAGES === "1" },
     })
     redis.set("discord_ws_config", wsConfig)
     redis.publish("discord_ws_config", wsConfig)

@@ -14,6 +14,8 @@ import oneOffCron from "./one-off";
 import ensureMsgDeleteCron from "./ensure-msg-delete";
 import dailyStatsCron from "./daily-stats";
 import backfillNamesCron from "./backfill-names";
+import backupCron from "./backup";
+import { startSecurityPoller } from "../security/audit-log";
 
 export const runCrons = (api: API | API2, db: typeof import("../utils/db"), redis?: Bun.RedisClient) => {
     const crons = [
@@ -22,6 +24,7 @@ export const runCrons = (api: API | API2, db: typeof import("../utils/db"), redi
         ensureMsgDeleteCron,
         dailyStatsCron,
         backfillNamesCron,
+        backupCron,
     ];
 
     const cronJobs = [] as Bun.CronJob[];
@@ -45,7 +48,11 @@ export const runCrons = (api: API | API2, db: typeof import("../utils/db"), redi
         }
     }
 
+    // audit log polling: event log + bot quarantine (per guild, throttled)
+    const stopSecurityPoller = startSecurityPoller(api, db, redis);
+
     return async () => {
+        stopSecurityPoller();
         for (const job of cronJobs) job.stop();
         while (running > 0) await Bun.sleep(100);
         return true;

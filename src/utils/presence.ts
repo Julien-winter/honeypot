@@ -39,7 +39,7 @@ async function tick(gateway: WebSocketManager): Promise<void> {
         idx++;
         const shards = await gateway.getShardIds().catch(() => [] as number[]);
         for (const id of shards) {
-            await gateway.send(id, { op: GatewayOpcodes.PresenceUpdate, d: presence }).catch(() => null);
+            await Promise.resolve(gateway.send(id, { op: GatewayOpcodes.PresenceUpdate, d: presence })).catch(() => null);
         }
     } catch {
         // presence is cosmetic, never crash the bot over it

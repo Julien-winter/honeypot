@@ -12,12 +12,18 @@ import { moderationBucket } from "../utils/rate-limit";
 import { tryStartModeration, reportProgress, endModeration } from "../utils/moderation-progress";
 import { maybeFilterLink } from "../utils/link-filter";
 import type { HoneypotConfig, HoneypotChannel } from "../utils/db";
+import { handleSecurityMessage } from "../security/message-guard";
+import { getSecurityConfigCached, messageModulesEnabled } from "../security/config";
 
 
 const handler: EventHandler<GatewayDispatchEvents.MessageCreate> = {
     event: GatewayDispatchEvents.MessageCreate,
     handler: async ({ data: message, api, applicationId, redis, db }) => {
         if (!message.guild_id) return;
+
+        // security modules (anti-spam / anti-phishing) watch every channel, not just the honeypot
+        handleSecurityMessage(message, api, applicationId, redis, db)
+            .catch(err => console.error(`Error with security message handler: ${err}`));
 
         // if a user used a slash command, attribute it to the user instead of ignoring as its a bot msg
         if (message.interaction_metadata && message.author.id !== applicationId) {
@@ -54,6 +60,9 @@ const handler: EventHandler<GatewayDispatchEvents.MessageCreate> = {
             const { config, channels } = result;
             if (!config || !config.action) return;
             if (channels.some(c => c.channel_id === message.channel_id)) return;
+            // anti-spam/phishing guilds must keep receiving every message, so never restrict them
+            const secCfg = await getSecurityConfigCached(db, message.guild_id);
+            if (messageModulesEnabled(secCfg)) return;
             const ids = channels.map(c => c.channel_id);
             setSubscribedChannelCache(message.guild_id, ids.length > 0 ? ids : ["none"], redis);
         }
@@ -70,7 +79,11 @@ const onMessage = async (
     try {
         if (!process.env.HAS_PROXY_WS && redis) {
             const channels = await getSubscribedChannelCache(guildId, redis)
-            if (channels && !channels.includes(channelId)) return;
+            if (channels && !channels.includes(channelId)) {
+                // security modules still need messages from outside the honeypot channels
+                const secCfg = await getSecurityConfigCached(db, guildId);
+                if (!messageModulesEnabled(secCfg)) return;
+            }
         }
 
         const result = await db.getConfigWithChannels(guildId);
@@ -82,7 +95,7 @@ const onMessage = async (
         // THE IMPORTANT CHECK
         const matchedChannel = channels.find(c => c.channel_id === channelId);
         if (!matchedChannel) {
-            if (redis) {
+            if (redis && !messageModulesEnabled(await getSecurityConfigCached(db, guildId))) {
                 const ids = channels.map(c => c.channel_id);
                 setSubscribedChannelCache(guildId, ids.length > 0 ? ids : ["none"], redis);
             }

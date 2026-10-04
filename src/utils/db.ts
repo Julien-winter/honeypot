@@ -37,6 +37,44 @@ export type ConfigWithChannels = {
   channels: HoneypotChannel[];
 };
 
+export type SecurityModule = 'anti_nuke' | 'quarantine' | 'anti_spam' | 'anti_phishing' | 'event_log' | 'backups';
+
+export type SecurityConfig = {
+  guild_id: string;
+  anti_nuke: boolean;
+  quarantine: boolean;
+  anti_spam: boolean;
+  anti_phishing: boolean;
+  event_log: boolean;
+  backups: boolean;
+  event_log_channel_id: string | null;
+  spam_threshold: number;
+  spam_window_sec: number;
+  mention_threshold: number;
+  anti_nuke_action: 'strip' | 'strip_ban' | 'alert';
+};
+
+export type SecurityEventType = 'anti_nuke' | 'quarantine' | 'spam' | 'phishing' | 'backup' | 'restore';
+
+export type SecurityBackupRow = {
+  id: number;
+  guild_id: string;
+  created_at: number;
+  reason: string | null;
+  meta: { channels: number; roles: number } | null;
+  data: string;
+};
+
+export type QuarantineRow = {
+  guild_id: string;
+  bot_user_id: string;
+  added_by: string | null;
+  roles: string[];
+  created_at: number;
+  approved_by: string | null;
+  approved_at: number | null;
+};
+
 export const db = new SQL(process.env.DATABASE_URL || "sqlite://honeypot.sqlite", {
   readonly: process.env.DATABASE_READONLY === "1" ? true : undefined,
 });
@@ -319,6 +357,65 @@ CREATE INDEX IF NOT EXISTS idx_honeypot_events_stats ON honeypot_events(timestam
       }
       await tx`CREATE INDEX IF NOT EXISTS idx_premium_payments_user ON premium_payments(user_id)`;
     }
+  },
+  {
+    version: 14,
+    name: "security modules",
+    up: async (tx) => {
+      await tx`
+CREATE TABLE IF NOT EXISTS security_config (
+  guild_id BIGINT PRIMARY KEY,
+  anti_nuke INTEGER NOT NULL DEFAULT 0,
+  quarantine INTEGER NOT NULL DEFAULT 0,
+  anti_spam INTEGER NOT NULL DEFAULT 0,
+  anti_phishing INTEGER NOT NULL DEFAULT 0,
+  event_log INTEGER NOT NULL DEFAULT 0,
+  backups INTEGER NOT NULL DEFAULT 0,
+  event_log_channel_id BIGINT,
+  spam_threshold INTEGER NOT NULL DEFAULT 5,
+  spam_window_sec INTEGER NOT NULL DEFAULT 10,
+  mention_threshold INTEGER NOT NULL DEFAULT 5,
+  anti_nuke_action TEXT NOT NULL DEFAULT 'strip'
+);
+
+CREATE TABLE IF NOT EXISTS security_backups (
+  id INTEGER PRIMARY KEY ${autoincrementSyntax},
+  guild_id BIGINT NOT NULL,
+  created_at BIGINT NOT NULL,
+  reason TEXT,
+  meta TEXT,
+  data TEXT NOT NULL,
+  FOREIGN KEY (guild_id) REFERENCES security_config(guild_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS quarantine_bots (
+  guild_id BIGINT NOT NULL,
+  bot_user_id BIGINT NOT NULL,
+  added_by BIGINT,
+  roles TEXT DEFAULT '[]',
+  created_at BIGINT NOT NULL,
+  approved_by BIGINT,
+  approved_at BIGINT,
+  PRIMARY KEY (guild_id, bot_user_id),
+  FOREIGN KEY (guild_id) REFERENCES security_config(guild_id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS security_events (
+  id INTEGER PRIMARY KEY ${autoincrementSyntax},
+  guild_id BIGINT NOT NULL,
+  type TEXT NOT NULL,
+  user_id BIGINT,
+  channel_id BIGINT,
+  meta TEXT,
+  timestamp BIGINT NOT NULL,
+  FOREIGN KEY (guild_id) REFERENCES security_config(guild_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_security_backups_guild ON security_backups(guild_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_security_events_stats ON security_events(timestamp, guild_id);
+CREATE INDEX IF NOT EXISTS idx_security_events_type ON security_events(type, timestamp);
+`;
+    }
   }
 ];
 export async function initDb() {
@@ -461,6 +558,208 @@ export async function purgeLeftGuilds(days: number = LEFT_GRACE_DAYS): Promise<n
 
 export async function deleteConfig(guild_id: string) {
   await db`DELETE FROM honeypot_config WHERE guild_id = ${guild_id}`;
+}
+
+// ------------------------- security modules -------------------------
+
+function parseSecurityRow(row: any): SecurityConfig {
+  return {
+    guild_id: row.guild_id.toString(),
+    anti_nuke: !!Number(row.anti_nuke),
+    quarantine: !!Number(row.quarantine),
+    anti_spam: !!Number(row.anti_spam),
+    anti_phishing: !!Number(row.anti_phishing),
+    event_log: !!Number(row.event_log),
+    backups: !!Number(row.backups),
+    event_log_channel_id: row.event_log_channel_id != null ? row.event_log_channel_id.toString() : null,
+    spam_threshold: Number(row.spam_threshold) || 5,
+    spam_window_sec: Number(row.spam_window_sec) || 10,
+    mention_threshold: Number(row.mention_threshold) || 5,
+    anti_nuke_action: ['strip', 'strip_ban', 'alert'].includes(row.anti_nuke_action) ? row.anti_nuke_action : 'strip',
+  };
+}
+
+const securitySelectCols = `
+  CAST(guild_id AS VARCHAR(20)) AS guild_id,
+  anti_nuke, quarantine, anti_spam, anti_phishing, event_log, backups,
+  CAST(event_log_channel_id AS VARCHAR(20)) AS event_log_channel_id,
+  spam_threshold, spam_window_sec, mention_threshold, anti_nuke_action`;
+
+export async function getSecurityConfig(guild_id: string): Promise<SecurityConfig | null> {
+  const [row] = await db`SELECT ${db.unsafe(securitySelectCols)} FROM security_config WHERE guild_id = ${guild_id}`;
+  if (!row) return null;
+  return parseSecurityRow(row);
+}
+
+/** Insert a default row if missing, then return it (safe to call repeatedly). */
+export async function ensureSecurityConfig(guild_id: string): Promise<SecurityConfig> {
+  const existing = await getSecurityConfig(guild_id);
+  if (existing) return existing;
+  await db`INSERT INTO security_config (guild_id) VALUES (${guild_id})`;
+  return (await getSecurityConfig(guild_id))!;
+}
+
+export async function setSecurityConfig(config: SecurityConfig) {
+  await db`
+    INSERT INTO security_config (guild_id, anti_nuke, quarantine, anti_spam, anti_phishing, event_log, backups, event_log_channel_id, spam_threshold, spam_window_sec, mention_threshold, anti_nuke_action)
+    VALUES (${config.guild_id}, ${config.anti_nuke ? 1 : 0}, ${config.quarantine ? 1 : 0}, ${config.anti_spam ? 1 : 0}, ${config.anti_phishing ? 1 : 0}, ${config.event_log ? 1 : 0}, ${config.backups ? 1 : 0}, ${config.event_log_channel_id}, ${config.spam_threshold}, ${config.spam_window_sec}, ${config.mention_threshold}, ${config.anti_nuke_action})
+    ON CONFLICT(guild_id) DO UPDATE SET
+      anti_nuke=excluded.anti_nuke,
+      quarantine=excluded.quarantine,
+      anti_spam=excluded.anti_spam,
+      anti_phishing=excluded.anti_phishing,
+      event_log=excluded.event_log,
+      backups=excluded.backups,
+      event_log_channel_id=excluded.event_log_channel_id,
+      spam_threshold=excluded.spam_threshold,
+      spam_window_sec=excluded.spam_window_sec,
+      mention_threshold=excluded.mention_threshold,
+      anti_nuke_action=excluded.anti_nuke_action
+  `;
+}
+
+/** All security data for a guild - called when the bot leaves a server. */
+export async function deleteSecurityData(guild_id: string) {
+  await db`DELETE FROM security_config WHERE guild_id = ${guild_id}`;
+}
+
+/** Guilds with a given security module enabled (for pollers/crons). */
+export async function getSecurityGuilds(module: SecurityModule): Promise<SecurityConfig[]> {
+  const columns: SecurityModule[] = ['anti_nuke', 'quarantine', 'anti_spam', 'anti_phishing', 'event_log', 'backups'];
+  const col = columns.find(c => c === module);
+  if (!col) return [];
+  const rows = await db.unsafe(`SELECT ${securitySelectCols} FROM security_config WHERE ${col} = 1`);
+  return rows.map(parseSecurityRow);
+}
+
+export async function unsetSecurityLogChannel(guild_id: string) {
+  await db`UPDATE security_config SET event_log_channel_id = NULL, event_log = 0 WHERE guild_id = ${guild_id}`;
+}
+
+// --- backups ---
+
+export async function addSecurityBackup(
+  guild_id: string,
+  data: string,
+  meta: { channels: number; roles: number },
+  reason: string | null,
+  keep: number = 6,
+): Promise<number> {
+  const createdAt = Math.floor(Date.now() / 1000);
+  await db`
+    INSERT INTO security_backups (guild_id, created_at, reason, meta, data)
+    VALUES (${guild_id}, ${createdAt}, ${reason}, ${JSON.stringify(meta)}, ${data})`;
+  const [row] = await db`SELECT MAX(id) AS id FROM security_backups WHERE guild_id = ${guild_id}`;
+  // keep only the newest `keep` backups per guild
+  await db`
+    DELETE FROM security_backups WHERE guild_id = ${guild_id} AND id NOT IN (
+      SELECT id FROM security_backups WHERE guild_id = ${guild_id} ORDER BY id DESC LIMIT ${keep}
+    )`;
+  return Number(row?.id ?? 0);
+}
+
+export async function getSecurityBackups(guild_id: string, limit: number = 10): Promise<Omit<SecurityBackupRow, 'data'>[]> {
+  const rows = await db`
+    SELECT id, CAST(guild_id AS VARCHAR(20)) AS guild_id, created_at, reason, meta
+    FROM security_backups WHERE guild_id = ${guild_id} ORDER BY id DESC LIMIT ${limit}`;
+  return rows.map((r: any) => ({
+    id: Number(r.id),
+    guild_id: r.guild_id.toString(),
+    created_at: Number(r.created_at),
+    reason: r.reason ?? null,
+    meta: r.meta ? JSON.parse(r.meta) : null,
+  }));
+}
+
+export async function getSecurityBackup(guild_id: string, id: number): Promise<SecurityBackupRow | null> {
+  const [row] = await db`
+    SELECT id, CAST(guild_id AS VARCHAR(20)) AS guild_id, created_at, reason, meta, data
+    FROM security_backups WHERE guild_id = ${guild_id} AND id = ${id}`;
+  if (!row) return null;
+  return {
+    id: Number(row.id),
+    guild_id: row.guild_id.toString(),
+    created_at: Number(row.created_at),
+    reason: row.reason ?? null,
+    meta: row.meta ? JSON.parse(row.meta) : null,
+    data: row.data,
+  };
+}
+
+export async function getLatestSecurityBackup(guild_id: string): Promise<SecurityBackupRow | null> {
+  const [row] = await db`
+    SELECT id, CAST(guild_id AS VARCHAR(20)) AS guild_id, created_at, reason, meta, data
+    FROM security_backups WHERE guild_id = ${guild_id} ORDER BY id DESC LIMIT 1`;
+  if (!row) return null;
+  return {
+    id: Number(row.id),
+    guild_id: row.guild_id.toString(),
+    created_at: Number(row.created_at),
+    reason: row.reason ?? null,
+    meta: row.meta ? JSON.parse(row.meta) : null,
+    data: row.data,
+  };
+}
+
+// --- bot quarantine ---
+
+export async function addQuarantinedBot(guild_id: string, bot_user_id: string, added_by: string | null, roles: string[]) {
+  await db`
+    INSERT INTO quarantine_bots (guild_id, bot_user_id, added_by, roles, created_at)
+    VALUES (${guild_id}, ${bot_user_id}, ${added_by}, ${JSON.stringify(roles)}, ${Math.floor(Date.now() / 1000)})
+    ON CONFLICT(guild_id, bot_user_id) DO UPDATE SET
+      added_by=excluded.added_by,
+      roles=excluded.roles,
+      created_at=excluded.created_at,
+      approved_by=NULL,
+      approved_at=NULL`;
+}
+
+export async function getQuarantinedBot(guild_id: string, bot_user_id: string): Promise<QuarantineRow | null> {
+  const [row] = await db`
+    SELECT CAST(guild_id AS VARCHAR(20)) AS guild_id, CAST(bot_user_id AS VARCHAR(20)) AS bot_user_id,
+      CAST(added_by AS VARCHAR(20)) AS added_by, roles, created_at,
+      CAST(approved_by AS VARCHAR(20)) AS approved_by, approved_at
+    FROM quarantine_bots WHERE guild_id = ${guild_id} AND bot_user_id = ${bot_user_id}`;
+  if (!row) return null;
+  return {
+    guild_id: row.guild_id.toString(),
+    bot_user_id: row.bot_user_id.toString(),
+    added_by: row.added_by?.toString() ?? null,
+    roles: JSON.parse(row.roles || "[]"),
+    created_at: Number(row.created_at),
+    approved_by: row.approved_by?.toString() ?? null,
+    approved_at: row.approved_at != null ? Number(row.approved_at) : null,
+  };
+}
+
+export async function approveQuarantinedBot(guild_id: string, bot_user_id: string, approved_by: string) {
+  await db`UPDATE quarantine_bots SET approved_by = ${approved_by}, approved_at = ${Math.floor(Date.now() / 1000)} WHERE guild_id = ${guild_id} AND bot_user_id = ${bot_user_id}`;
+}
+
+export async function removeQuarantinedBot(guild_id: string, bot_user_id: string) {
+  await db`DELETE FROM quarantine_bots WHERE guild_id = ${guild_id} AND bot_user_id = ${bot_user_id}`;
+}
+
+// --- security event log (used for stats & /stats command) ---
+
+export async function logSecurityEvent(guild_id: string, type: SecurityEventType, user_id?: string | null, channel_id?: string | null, meta?: Record<string, unknown> | null) {
+  await db`INSERT INTO security_events (guild_id, type, user_id, channel_id, meta, timestamp)
+    VALUES (${guild_id}, ${type}, ${user_id ?? null}, ${channel_id ?? null}, ${meta ? JSON.stringify(meta) : null}, ${Math.floor(Date.now() / 1000)})`;
+}
+
+export async function getSecurityEventTotals(): Promise<Record<SecurityEventType, number>> {
+  const rows = await db`SELECT type, COUNT(*) as count FROM security_events GROUP BY type`;
+  const totals = { anti_nuke: 0, quarantine: 0, spam: 0, phishing: 0, backup: 0, restore: 0 } as Record<string, number>;
+  for (const row of rows) totals[row.type] = Number(row.count);
+  return totals as Record<SecurityEventType, number>;
+}
+
+export async function getGuildSecurityCounts(guild_id: string): Promise<Record<SecurityEventType, number>> {
+  const rows = await db`SELECT type, COUNT(*) as count FROM security_events WHERE guild_id = ${guild_id} GROUP BY type`;
+  const totals = { anti_nuke: 0, quarantine: 0, spam: 0, phishing: 0, backup: 0, restore: 0 } as Record<string, number>;
+  for (const row of rows) totals[row.type] = Number(row.count);
+  return totals as Record<SecurityEventType, number>;
 }
 
 export async function pingDb(): Promise<void> {
@@ -1045,6 +1344,12 @@ export async function getFullStats(): Promise<{
   last7dEngagedGuilds: number;
   moderationsByAction: { ban: number; softban: number };
   dailyStats: { date: string; moderations: number; engagedGuilds: number; }[];
+  security: {
+    totals: Record<SecurityEventType, number>;
+    last7dIncidents: number;
+    dailyStats: { date: string; incidents: number; }[];
+    modules: Record<SecurityModule, number>;
+  };
 }> {
   const now = new Date();
 
@@ -1055,11 +1360,17 @@ export async function getFullStats(): Promise<{
   const sevenDaysAgoSec = todayStartSec - (7 * 24 * 60 * 60);
   const fourteenDaysAgoSec = todayStartSec - (14 * 24 * 60 * 60);
 
-  const [[meta], events, byActionRows] = await Promise.all([
+  const [[meta], events, byActionRows, securityTotalRows, securityEvents] = await Promise.all([
     db`
       SELECT
         (SELECT COUNT(*) FROM honeypot_config WHERE COALESCE(left_at, 0) = 0) AS guilds,
-        (SELECT COUNT(*) FROM honeypot_events e WHERE EXISTS (SELECT 1 FROM honeypot_config c WHERE c.guild_id = e.guild_id AND COALESCE(c.left_at, 0) = 0)) AS moderations
+        (SELECT COUNT(*) FROM honeypot_events e WHERE EXISTS (SELECT 1 FROM honeypot_config c WHERE c.guild_id = e.guild_id AND COALESCE(c.left_at, 0) = 0)) AS moderations,
+        (SELECT COUNT(*) FROM security_config WHERE anti_nuke = 1) AS mod_anti_nuke,
+        (SELECT COUNT(*) FROM security_config WHERE quarantine = 1) AS mod_quarantine,
+        (SELECT COUNT(*) FROM security_config WHERE anti_spam = 1) AS mod_anti_spam,
+        (SELECT COUNT(*) FROM security_config WHERE anti_phishing = 1) AS mod_anti_phishing,
+        (SELECT COUNT(*) FROM security_config WHERE event_log = 1) AS mod_event_log,
+        (SELECT COUNT(*) FROM security_config WHERE backups = 1) AS mod_backups
     `,
     db`
       SELECT timestamp, CAST(guild_id AS VARCHAR(20)) AS guild_id
@@ -1072,6 +1383,8 @@ export async function getFullStats(): Promise<{
       FROM honeypot_events
       GROUP BY action;
     `,
+    db`SELECT type, COUNT(*) AS count FROM security_events GROUP BY type`,
+    db`SELECT timestamp FROM security_events WHERE timestamp >= ${fourteenDaysAgoSec} ORDER BY timestamp ASC`,
   ]);
 
   let last7dModerations = 0;
@@ -1107,6 +1420,21 @@ export async function getFullStats(): Promise<{
     if (gID) day.guilds.add(gID);
   }
 
+  // security events: totals by type + daily incidents over the same 14 day window
+  const securityTotals = { anti_nuke: 0, quarantine: 0, spam: 0, phishing: 0, backup: 0, restore: 0 } as Record<string, number>;
+  for (const row of securityTotalRows) securityTotals[row.type] = Number(row.count);
+
+  let last7dSecurityIncidents = 0;
+  const securityDailyMap = new Map<number, number>();
+  for (const row of securityEvents) {
+    const ts = row.timestamp;
+    if (ts < fourteenDaysAgoSec) continue;
+    if (ts >= sevenDaysAgoSec) last7dSecurityIncidents++;
+    if (ts >= todayStartSec) continue;
+    const dayStartTimestamp = ts - (ts % SECONDS_IN_DAY);
+    securityDailyMap.set(dayStartTimestamp, (securityDailyMap.get(dayStartTimestamp) ?? 0) + 1);
+  }
+
   return {
     guilds: Number(meta.guilds),
     moderations: Number(meta.moderations),
@@ -1126,5 +1454,23 @@ export async function getFullStats(): Promise<{
         moderations: v.moderations,
         engagedGuilds: v.guilds.size,
       })),
+    security: {
+      totals: securityTotals as Record<SecurityEventType, number>,
+      last7dIncidents: last7dSecurityIncidents,
+      dailyStats: Array.from(securityDailyMap.entries())
+        .sort((a, b) => a[0] - b[0])
+        .map(([dayTimestamp, incidents]) => ({
+          date: new Date(dayTimestamp * 1000).toISOString().split('T')[0]!,
+          incidents,
+        })),
+      modules: {
+        anti_nuke: Number(meta.mod_anti_nuke),
+        quarantine: Number(meta.mod_quarantine),
+        anti_spam: Number(meta.mod_anti_spam),
+        anti_phishing: Number(meta.mod_anti_phishing),
+        event_log: Number(meta.mod_event_log),
+        backups: Number(meta.mod_backups),
+      },
+    },
   };
 }

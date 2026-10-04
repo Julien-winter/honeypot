@@ -50,6 +50,19 @@ Options you can enable to avoid the bots better [**ⓘ**](https://honeypot.risky
 
 </sub>
 
+### Security Modules
+
+Configure everything with `/security` - optional protections beyond the honeypot channel [**ⓘ**](https://honeypot.riskymh.dev/docs)
+
+1. 🛡️ **Anti-Nuke & Restore:** Detects mass channel/role deletions, strips the attacker's roles, and rebuilds the structure from the latest backup.
+2. 🔒 **Bot Quarantine:** Newly added bots join without permissions until an admin approves or kicks them (avoids raid bots getting a head start).
+3. 🚫 **Anti-Spam:** Removes flood messages, mass mentions and coordinated raids in every channel.
+4. 🔗 **Anti-Phishing:** Deletes fake nitro / token stealer links (needs the [Message Content Intent](https://discord.com/developers/docs/topics/gateway#message-content-intent) + `HAS_MESSAGE_INTENT=1`).
+5. 📜 **Event Log:** Logs every change (channels, roles, bans, invites, ...) to a channel of your choice - powered by the audit log.
+6. 💾 **Auto-Backups:** Snapshots channels & roles every 10 minutes so `/backup restore` (or Anti-Nuke) can bring them back.
+
+> The critical modules (Anti-Nuke, Quarantine, Anti-Spam) can only be turned off by the server owner or an administrator.
+
 ### Tips to Maximize Honeypot Bot’s Effectiveness
 
 [**ⓘ**](https://honeypot.riskymh.dev/docs/tips) For best results, position your *#honeypot* channel near the top of your server list - recent spam bots often target the first few channels available. Consider renaming the *trap channel* to something less predictable, like *#pls-dont-chat-here*, to avoid automated bots that blacklist *"honeypot"* by name. Always ensure the bot’s role is ranked above standard member roles; this ensures it has the authority to remove problematic accounts. Explore the experimental features for additional defenses against evolving bot tactics, and enjoy a cleaner, safer community - so you can say goodbye to unwanted bots! 🎉
@@ -67,6 +80,21 @@ Options you can enable to avoid the bots better [**ⓘ**](https://honeypot.risky
 $ bun install
 $ bun start # or `bun dev`
 ```
+
+### Environment variables
+
+Copy `.env.example` to `.env` and fill in the values:
+
+| Variable | Default | Description |
+| --- | --- | --- |
+| `DISCORD_TOKEN` | *(required)* | Bot token |
+| `DATABASE_URL` | *(required)* | SQL database (sqlite/postgres/mysql) |
+| `REDIS_URL` | - | Enables caching, cross-replica locks & the sharded setup |
+| `HAS_MESSAGE_INTENT` | `0` | `1` = enables the Message Content Intent (anti-phishing, Forward Message) - also activate it in the [Developer Portal](https://discord.com/developers/applications) |
+| `SECURITY_BOT_MESSAGES` | `0` | `1` = also scan messages from other bots/webhooks (anti-phishing) in sharded mode |
+| `SECURITY_POLLER` | on | `0` disables the audit-log poller (event log / quarantine) |
+| `SECURITY_POLL_SEC` | `20` | Seconds between audit-log polls |
+| `SECURITY_CYCLE_SEC` | `120` | Approx. seconds per server for a full audit-log cycle |
 
 ## Run the bot yourself
 

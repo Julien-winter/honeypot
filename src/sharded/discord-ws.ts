@@ -2,6 +2,7 @@ import { WebSocketManager, WebSocketShardEvents, CompressionMethod, type Session
 import { REST } from '@discordjs/rest';
 import { GatewayDispatchEvents, GatewayIntentBits, Routes, type GatewayDispatchPayload, type RESTGetAPIGatewayBotResult } from 'discord-api-types/v10';
 import initialPresence from '../utils/initial-presence';
+import { HAS_MESSAGE_INTENT } from '../utils/constants';
 
 if (!process.env.DISCORD_TOKEN) throw new Error("DISCORD_TOKEN environment variable not set.");
 if (!process.env.REDIS_URL) throw new Error("REDIS_URL environment variable not set.");
@@ -26,7 +27,7 @@ const rest = new REST().setToken(token!);
 const getShards = async () => (await rest.get(Routes.gatewayBot()) as RESTGetAPIGatewayBotResult).shards;
 const getManager = (shards: number, sessionCache: Map<number, SessionInfo | null> = new Map()) => new WebSocketManager({
     token,
-    intents: GatewayIntentBits.Guilds | GatewayIntentBits.GuildMessages,
+    intents: GatewayIntentBits.Guilds | GatewayIntentBits.GuildMessages | (HAS_MESSAGE_INTENT ? GatewayIntentBits.MessageContent : 0),
     fetchGatewayInformation: () => rest.get(Routes.gatewayBot()) as Promise<RESTGetAPIGatewayBotResult>,
     compression: process.env.COMPRESS_WEBSOCKETS === "true" ? CompressionMethod.ZstdNative : null,
     shardCount: shards,
@@ -34,7 +35,7 @@ const getManager = (shards: number, sessionCache: Map<number, SessionInfo | null
     retrieveSessionInfo: (shardId) => sessionCache.get(shardId) ?? null,
     updateSessionInfo: (shardId, sessionInfo) => void sessionCache.set(shardId, sessionInfo ?? null)
 });
-const managerState = "a" // update this when initial presense or intents changes (ie require shards to reconnect)
+const managerState = "b" // update this when initial presense or intents changes (ie require shards to reconnect)
 
 const sessionInfoCache: Record<number, Map<number, SessionInfo | null>> = {};
 async function getSessionStorageFromRedis(_shardCount = 1) {

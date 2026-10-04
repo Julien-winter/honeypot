@@ -23,6 +23,8 @@ The bot stores only the minimum data needed to function in a local SQLite databa
 - Server ID, honeypot channel ID, warning message ID, optional log channel ID, action setting ('softban', 'ban', or 'disabled'), and enabled experimental features ('channel-warmer', 'random-channel-name', etc.) for each server it is in
 - Server ID, user ID, and timestamp for each incident where a user triggers the honeypot (counter/stat purposes)
 - Custom messages set by server administrators (honeypot warning, DM, and log messages), if provided
+- Security settings (`/security`), security incident records (server ID, incident type such as spam/phishing/anti-nuke, timestamp, and the ID of the user or bot involved), and the IDs of quarantined bots, when those optional modules are enabled
+- Structure backups (channel and role names, IDs, positions, permissions and overwrites) created by the Auto-Backups/Anti-Nuke modules, kept for the 6 most recent snapshots per server
 
 ### How We Use Your Information
 
@@ -35,13 +37,13 @@ This data powers the bot's core functions:
 
 ### Data Storage and Retention
 
-Data is stored in a single local SQLite file. All server data is automatically deleted when the bot is removed from a server. No backups or cloud storage are used.
+Data is stored in a single local SQLite file. All server data is automatically deleted when the bot is removed from a server (including security settings, incident records, quarantines and structure backups). No backups or cloud storage are used.
 
 ### What We Do Not Collect
 
-- Message contents
+- Message contents (when Anti-Phishing is enabled, messages are scanned **in memory only** and never written to disk)
 - Full member lists  
-- Activity outside the honeypot channel
+- Activity outside the honeypot channel and outside the enabled security modules
 - Private messages or voice data
 - IP addresses or account details
 - File attachments

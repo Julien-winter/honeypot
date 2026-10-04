@@ -294,7 +294,7 @@ export async function handleDashboard(req: Request, url: URL, api?: API | API2 |
             const base = existing?.expires_at && existing.expires_at > now ? existing.expires_at : now;
             const expiresAt = base + 30 * 86400;
             await db.upsertPremiumUser(s.user.id, { status: "active", expires_at: expiresAt, username: s.user.username });
-            return Response.json({ ok: true, ...res, expiresAt });
+            return Response.json({ ...res, ok: true, expiresAt });
         } catch (err: any) {
             return Response.json({ error: err?.message || "verify failed" }, { status: 500 });
         }
@@ -520,7 +520,7 @@ export async function handleDashboard(req: Request, url: URL, api?: API | API2 |
         const channelsWithNames = await Promise.all(channels.map(async (c) => {
             let name: string | null = null;
             try {
-                const ch = await api.channels.get(c.channel_id) as { name?: string } | null;
+                const ch = await api?.channels.get(c.channel_id) as { name?: string } | null;
                 name = ch?.name ?? null;
             } catch { /* deleted channel */ }
             return { channelId: c.channel_id, name, msgId: c.msg_id, moderated: statByChannel.get(c.channel_id) ?? 0 };
@@ -529,7 +529,7 @@ export async function handleDashboard(req: Request, url: URL, api?: API | API2 |
         if (config.log_channel_id) {
             let logName: string | null = null;
             try {
-                const lc = await api.channels.get(config.log_channel_id) as { name?: string } | null;
+                const lc = await api?.channels.get(config.log_channel_id) as { name?: string } | null;
                 logName = lc?.name ?? null;
             } catch { /* deleted channel */ }
             logChannel = { id: config.log_channel_id, name: logName };
@@ -699,10 +699,10 @@ export async function handleDashboard(req: Request, url: URL, api?: API | API2 |
         }
         try {
             if (task === "warmer") {
-                const { channelWarmerExperiment } = await import("../cron/experiments");
+                const { channelWarmerExperiment } = await import("./cron/experiments");
                 await channelWarmerExperiment(api, guildId, channelId);
             } else {
-                const { randomChannelNameExperiment } = await import("../cron/experiments");
+                const { randomChannelNameExperiment } = await import("./cron/experiments");
                 const chaos = config.experiments.includes("random-channel-name-chaos");
                 await randomChannelNameExperiment(api, guildId, channelId, chaos);
             }

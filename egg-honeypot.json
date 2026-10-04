@@ -1,12 +1,12 @@
 {
-    "_comment": "Pterodactyl egg for the Honeypot Discord bot (https://github.com/RiskyMH/honeypot). Import via Admin > Nests > Import Egg. Based on the official generic Bun egg.",
+    "_comment": "Pterodactyl egg for the Honeypot Discord bot (https://github.com/Julien-winter/honeypot). Import via Admin > Nests > Import Egg. Based on the official generic Bun egg.",
     "meta": {
         "version": "PTDL_v2",
-        "update_url": null
+        "update_url": "https://raw.githubusercontent.com/Julien-winter/honeypot/main/egg-honeypot.json"
     },
     "exported_at": "2026-09-12T00:00:00+02:00",
     "name": "Honeypot Discord Bot",
-    "author": "RiskyMH/honeypot",
+    "author": "Julien-winter/honeypot",
     "description": "Honeypot Discord bot: automatically catches and removes spam bots via a dedicated honeypot channel. Needs only a DISCORD_TOKEN, no ports required.",
     "features": null,
     "docker_images": {
@@ -61,7 +61,7 @@
         },
         {
             "name": "Has Message Intent",
-            "description": "Optional. Set to 1 if your bot has the message content intent enabled.",
+            "description": "Set to 1 if Message Content Intent is enabled in the Developer Portal (forward-message, ensure-msg-delete, security anti-phishing).",
             "env_variable": "HAS_MESSAGE_INTENT",
             "default_value": "",
             "user_viewable": true,
@@ -73,7 +73,7 @@
             "name": "Git Repository Address",
             "description": "The Git repository to clone.",
             "env_variable": "GIT_ADDRESS",
-            "default_value": "https://github.com/RiskyMH/honeypot.git",
+            "default_value": "https://github.com/Julien-winter/honeypot.git",
             "user_viewable": true,
             "user_editable": true,
             "rules": "nullable|string",
@@ -107,16 +107,6 @@
             "user_viewable": true,
             "user_editable": true,
             "rules": "required|boolean",
-            "field_type": "text"
-        },
-        {
-            "name": "Has Message Intent",
-            "description": "Set to 1 if Message Content Intent is enabled in the Developer Portal (enables forward-message and ensure-msg-delete).",
-            "env_variable": "HAS_MESSAGE_INTENT",
-            "default_value": "",
-            "user_viewable": true,
-            "user_editable": true,
-            "rules": "nullable|string",
             "field_type": "text"
         },
         {
