@@ -54,7 +54,7 @@ Options you can enable to avoid the bots better [**ⓘ**](https://honeypot.risky
 
 Configure everything with `/security` - optional protections beyond the honeypot channel [**ⓘ**](https://honeypot.riskymh.dev/docs)
 
-1. 🛡️ **Anti-Nuke & Restore:** Detects mass channel/role deletions, strips the attacker's roles, and rebuilds the structure from the latest automatic snapshot (taken every 10 minutes, only when something changed - the last 4 are kept).
+1. 🛡️ **Anti-Nuke & Restore:** The first deleted channel/role only asks the server/bot owner for approval (nothing is changed yet) - so a deliberate cleanup never triggers the response by itself. If structure keeps disappearing, it intervenes **immediately** without waiting: strips the attacker's roles and rebuilds everything from the latest automatic snapshot (taken every 10 minutes, only when something changed - the last 4 are kept), including member roles, server name/icon and recent message history. Executors with a role listed in `ANTI_NUKE_TRUSTED_ROLES` (comma separated role ids) are ignored entirely.
 2. 🔒 **Bot Quarantine:** Newly added bots join without permissions until an admin approves or kicks them (avoids raid bots getting a head start).
 3. 🚫 **Anti-Spam:** Removes flood messages, mass mentions and coordinated raids in every channel.
 4. 🔗 **Anti-Phishing:** Deletes fake nitro / token stealer links (needs the [Message Content Intent](https://discord.com/developers/docs/topics/gateway#message-content-intent) + `HAS_MESSAGE_INTENT=1`).
@@ -94,6 +94,9 @@ Copy `.env.example` to `.env` and fill in the values:
 | `SECURITY_POLLER` | on | `0` disables the audit-log poller (event log / quarantine) |
 | `SECURITY_POLL_SEC` | `20` | Seconds between audit-log polls |
 | `SECURITY_CYCLE_SEC` | `120` | Approx. seconds per server for a full audit-log cycle |
+| `OWNER_IDS` | - | Bot owners (comma separated) - dashboard access **and** who may approve restores / anti-nuke responses |
+| `ANTI_NUKE_TRUSTED_ROLES` | - | Role ids (comma separated) whose holders may delete structure without triggering Anti-Nuke |
+| `BACKUP_MESSAGES` | `30` | Messages per text channel captured in snapshots and re-posted on restore (`0`-`50`, `0` disables) |
 
 ## Run the bot yourself
 

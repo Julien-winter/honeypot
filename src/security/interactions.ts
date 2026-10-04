@@ -28,24 +28,24 @@ import {
 import { approveQuarantine, kickQuarantine } from "./quarantine";
 import { createBackup } from "./backup";
 import { sendSecurityLog } from "./notify";
+import { handleNukeApproval } from "./anti-nuke";
 import {
+    clearPendingRestore,
+    getPendingRestore,
     getRestoreApprovers,
     isRestoreApprover,
     logRestoreResult,
     restoreStatusLine,
     runRestore,
+    setPendingRestore,
     type RunRestoreOutcome,
 } from "./restore-run";
 
-/** One pending manual restore request per guild (no repeated pings). */
-const pendingRestores = new Map<string, { requester: string; expires: number }>();
-
-/** Drop a pending manual request - used when the anti-nuke takes over on its own. */
-export function clearPendingRestore(guildId: string): boolean {
-    return pendingRestores.delete(guildId);
+/** Event log channel when configured - otherwise the channel the interaction came from. */
+async function requestChannel(db: DbModule, guildId: string, fallback: string | null): Promise<string | null> {
+    const cfg = await db.getSecurityConfig(guildId).catch(() => null);
+    return cfg?.event_log_channel_id ?? fallback;
 }
-
-const RESTORE_REQUEST_TTL = 5 * 60_000;
 
 /** Run a restore that has been approved (by an approver directly, or via the button flow). */
 async function startApprovedRestore(
@@ -72,7 +72,7 @@ async function startApprovedRestore(
 
 type ShownModule = Exclude<SecurityModule, "backups">;
 const MODULE_LABELS: Record<ShownModule, { label: string; emoji: string; description: string }> = {
-    anti_nuke: { label: "Anti-Nuke & Restore", emoji: "🛡️", description: "Mass channel/role deletions: strips the attacker, auto-rebuilds from snapshots" },
+    anti_nuke: { label: "Anti-Nuke & Restore", emoji: "🛡️", description: "First deletion asks for approval - if it keeps going, strips the attacker and rebuilds from snapshots" },
     quarantine: { label: "Bot Quarantine", emoji: "🔒", description: "New bots join without permissions until approved" },
     anti_spam: { label: "Anti-Spam", emoji: "🚫", description: "Floods, mass mentions and coordinated raids" },
     anti_phishing: { label: "Anti-Phishing", emoji: "🔗", description: "Removes fake nitro / token stealer links" },
@@ -412,9 +412,21 @@ export async function handleSecurityInteraction(
             return true;
         }
 
+        // ------------------------- nuke response: approve / dismiss buttons -------------------------
+        if (interaction.type === InteractionType.MessageComponent &&
+            (interaction.data.custom_id === "nuke_ok" || interaction.data.custom_id === "nuke_no")) {
+            const status = await handleNukeApproval(
+                api, db, redis, interaction.application_id, guildId, userId,
+                interaction.data.custom_id === "nuke_ok",
+            );
+            await replyEphemeral(api, interaction, { content: status });
+            return true;
+        }
+
         // ------------------------- restore: request button -------------------------
         if (interaction.type === InteractionType.MessageComponent && interaction.data.custom_id === "sec_restore") {
             const isApprover = await isRestoreApprover(api, guildId, userId, interaction.application_id).catch(() => false);
+            const logChannel = await requestChannel(db, guildId, interaction.channel_id ?? null);
 
             // an approver may run it directly - no approval round-trip needed
             if (isApprover) {
@@ -423,31 +435,30 @@ export async function handleSecurityInteraction(
                     await replyEphemeral(api, interaction, { content: "❌ **No snapshot available yet** - the first backup runs within 10 minutes of enabling Anti-Nuke." });
                     return true;
                 }
-                await replyEphemeral(api, interaction, { content: `♻️ **Restore started** from snapshot #${backup.id} - follow the progress message in this channel.` });
-                await startApprovedRestore(api, db, redis, guildId, interaction.application_id, interaction.channel_id ?? null, userId, userId);
+                await replyEphemeral(api, interaction, { content: `♻️ **Restore started** from snapshot #${backup.id} - follow the progress message in the event log.` });
+                await startApprovedRestore(api, db, redis, guildId, interaction.application_id, logChannel, userId, userId);
                 return true;
             }
 
-            // otherwise exactly ONE approval request goes out to an approver
+            // otherwise exactly ONE approval request goes out to an approver (into the event log)
             const now = Date.now();
-            const pending = pendingRestores.get(guildId);
-            if (pending && pending.expires > now) {
+            const pending = getPendingRestore(guildId);
+            if (pending) {
                 await replyEphemeral(api, interaction, {
                     content: `⏳ A restore request from <@${pending.requester}> is already pending approval.\n-# One request at a time - no duplicate pings are sent.`,
                 });
                 return true;
             }
-            pendingRestores.delete(guildId);
 
             const approvers = await getRestoreApprovers(api, guildId, interaction.application_id).catch(() => []);
             const target = approvers.find(id => id !== userId) ?? approvers[0];
-            if (!target || !interaction.channel_id) {
-                await replyEphemeral(api, interaction, { content: "❌ No approver could be determined for this server." });
+            if (!target || !logChannel) {
+                await replyEphemeral(api, interaction, { content: "❌ No approver or event log channel could be determined for this server." });
                 return true;
             }
-            pendingRestores.set(guildId, { requester: userId, expires: now + RESTORE_REQUEST_TTL });
+            setPendingRestore(guildId, userId);
 
-            await api.channels.createMessage(interaction.channel_id, {
+            await api.channels.createMessage(logChannel, {
                 content: `♻️ **Restore approval requested**\n<@${target}> - <@${userId}> wants to restore this server from the latest snapshot.\nOnly the **server owner** or the **bot owner** can approve. *Expires in 5 minutes.*`,
                 components: [{
                     type: ComponentType.ActionRow,
@@ -460,7 +471,7 @@ export async function handleSecurityInteraction(
             }).catch(() => null);
 
             await replyEphemeral(api, interaction, {
-                content: `⏳ Approval requested from <@${target}>.\n-# Expires in 5 minutes; only one request can be open at a time.`,
+                content: `⏳ Approval requested from <@${target}> in <#${logChannel}>.\n-# Expires in 5 minutes; only one request can be open at a time.`,
             });
             return true;
         }
@@ -469,13 +480,13 @@ export async function handleSecurityInteraction(
         if (interaction.type === InteractionType.MessageComponent &&
             (interaction.data.custom_id === "restore_ok" || interaction.data.custom_id === "restore_no")) {
             const approve = interaction.data.custom_id === "restore_ok";
-            const pending = pendingRestores.get(guildId);
+            const pending = getPendingRestore(guildId);
             const retireButtons = () => api.channels.editMessage(interaction.message.channel_id, interaction.message.id, {
                 components: [],
             }).catch(() => null);
 
-            if (!pending || pending.expires < Date.now()) {
-                pendingRestores.delete(guildId);
+            if (!pending) {
+                clearPendingRestore(guildId);
                 await retireButtons();
                 await replyEphemeral(api, interaction, { content: "⌛ This restore request has expired - ask for a new one with the Restore button." });
                 return true;
@@ -488,7 +499,7 @@ export async function handleSecurityInteraction(
                     await replyEphemeral(api, interaction, { content: "❌ Only the requester or an approver can cancel this request." });
                     return true;
                 }
-                pendingRestores.delete(guildId);
+                clearPendingRestore(guildId);
                 await retireButtons();
                 await replyEphemeral(api, interaction, { content: `🗑️ Restore request by <@${pending.requester}> was cancelled.` });
                 return true;
@@ -501,7 +512,7 @@ export async function handleSecurityInteraction(
                 return true;
             }
 
-            pendingRestores.delete(guildId);
+            clearPendingRestore(guildId);
             await retireButtons();
 
             const backup = await db.getLatestSecurityBackup(guildId).catch(() => null);
@@ -510,10 +521,11 @@ export async function handleSecurityInteraction(
                 return true;
             }
 
+            const logChannel = await requestChannel(db, guildId, interaction.channel_id ?? null);
             await replyEphemeral(api, interaction, {
-                content: `✅ **Approved** by <@${userId}> - restoring snapshot #${backup.id}. Follow the progress message below.`,
+                content: `✅ **Approved** by <@${userId}> - restoring snapshot #${backup.id}. Follow the progress message in the event log.`,
             });
-            await startApprovedRestore(api, db, redis, guildId, interaction.application_id, interaction.channel_id ?? null, pending.requester, userId);
+            await startApprovedRestore(api, db, redis, guildId, interaction.application_id, logChannel, pending.requester, userId);
             return true;
         }
 

@@ -21,15 +21,26 @@ const inFlight = new Set<string>();
 /** Cached bot owners (application owner / team) - the "bot inviter" side of the approval. */
 let appOwnerCache: { ids: Set<string>; at: number } | null = null;
 
+/** Bot owners who may approve restores (env OWNER_IDS, same source as the dashboard). */
+const FALLBACK_BOT_OWNERS = ["1062884939093246045", "1160672514616336456"];
+
+function configuredBotOwners(): string[] {
+    const fromEnv = (process.env.OWNER_IDS ?? "").split(",").map(s => s.trim()).filter(Boolean);
+    return [...new Set([...FALLBACK_BOT_OWNERS, ...fromEnv])];
+}
+
 async function getBotOwners(api: API | API2): Promise<Set<string>> {
-    if (appOwnerCache && Date.now() - appOwnerCache.at < 10 * 60_000) return appOwnerCache.ids;
+    const ids = new Set(configuredBotOwners());
+    if (appOwnerCache && Date.now() - appOwnerCache.at < 10 * 60_000) {
+        for (const id of appOwnerCache.ids) ids.add(id);
+        return ids;
+    }
     try {
         const app = await api.rest.get(Routes.oauth2CurrentApplication()) as {
             owner?: { id: string } | null;
             owners?: { id: string }[];
             team?: { members?: { user: { id: string } }[] } | null;
         };
-        const ids = new Set<string>();
         if (app.owner?.id) ids.add(app.owner.id);
         for (const o of app.owners ?? []) ids.add(o.id);
         for (const m of app.team?.members ?? []) ids.add(m.user.id);
@@ -37,29 +48,51 @@ async function getBotOwners(api: API | API2): Promise<Set<string>> {
         return ids;
     } catch (err) {
         console.error(`Failed to read application owners: ${err}`);
-        return new Set();
+        return ids;
     }
 }
 
-/** Everyone allowed to approve a manual restore: server owner + bot owner(s). */
+/** Everyone allowed to approve a restore: server owner + bot owner(s). */
 export async function getRestoreApprovers(api: API | API2, guildId: string, applicationId: string): Promise<string[]> {
     const ids = new Set<string>();
     try {
         const guildInfo = await getGuildInfo(api, guildId, AbortSignal.timeout(1000)).catch(() => null);
         if (guildInfo?.ownerId) ids.add(guildInfo.ownerId);
-    } catch { /* guild info unavailable - app owners still apply */ }
+    } catch { /* guild info unavailable - bot owners still apply */ }
     for (const id of await getBotOwners(api)) ids.add(id);
-    ids.add(applicationId); // self-hosted single-owner fallback
     return [...ids];
 }
 
-/** Restore approvers: the server owner, or the owner(s) of this bot application. */
+/** Restore approvers: the server owner, or a configured bot owner. */
 export async function isRestoreApprover(api: API | API2, guildId: string, userId: string, applicationId: string): Promise<boolean> {
     try {
         return (await getRestoreApprovers(api, guildId, applicationId)).includes(userId);
     } catch {
-        return applicationId === userId;
+        return configuredBotOwners().includes(userId);
     }
+}
+
+// --- manual restore approval request (one open request per guild) ---
+
+type PendingManualRestore = { requester: string; expires: number };
+const pendingRestores = new Map<string, PendingManualRestore>();
+export const RESTORE_REQUEST_TTL = 5 * 60_000;
+
+export function getPendingRestore(guildId: string): PendingManualRestore | undefined {
+    const pending = pendingRestores.get(guildId);
+    if (pending && pending.expires < Date.now()) {
+        pendingRestores.delete(guildId);
+        return undefined;
+    }
+    return pending;
+}
+
+export function setPendingRestore(guildId: string, requester: string): void {
+    pendingRestores.set(guildId, { requester, expires: Date.now() + RESTORE_REQUEST_TTL });
+}
+
+export function clearPendingRestore(guildId: string): boolean {
+    return pendingRestores.delete(guildId);
 }
 
 const PHASE_LABEL: Record<RestoreProgress["phase"], string> = {
