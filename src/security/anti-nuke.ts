@@ -8,7 +8,7 @@ import type { SecurityConfig } from "../utils/db";
 import { getSecurityConfigCached, type DbModule } from "./config";
 import { recordSecurityEvent, sendSecurityLog } from "./notify";
 import { fetchAuditLogEntries } from "./audit-log";
-import { restoreSummary } from "./backup";
+import { createBackup, restoreSummary } from "./backup";
 import { clearPendingRestore, getRestoreApprovers, isRestoreApprover, runRestore } from "./restore-run";
 
 type StructureKind = "channel" | "role";
@@ -23,6 +23,12 @@ const TRUSTED_ROLES = new Set(
 
 const deleteWindows = new Map<string, number[]>(); // guild id -> recent deletion timestamps (all kinds)
 const memoryLocks = new Map<string, number>();
+
+/** Mass channel creation: snapshot + alert threshold (own throttle, never borrows the delete-response lock). */
+const CREATE_THRESHOLD = 3;
+const CREATE_COOLDOWN_MS = 10 * 60_000;
+const createWindows = new Map<string, number[]>(); // guild id -> recent channel-create timestamps
+const createCooldowns = new Map<string, number>(); // guild id -> next time a snapshot alert may fire
 
 /** An open "possible nuke" approval request. While one is live, the next deletion escalates. */
 type PendingNuke = {
@@ -154,6 +160,59 @@ export async function handleStructureDelete(
         // a request is already open and nothing new happened - let it stand
     } catch (err) {
         console.error(`Anti-nuke handler failed in ${guildId}: ${err}`);
+    }
+}
+
+/**
+ * Called from ChannelCreate. Anti-nuke needs a restore point BEFORE a raid fills the
+ * server with channels: when 3+ channels appear within 60s, snapshot immediately
+ * (the original channels still exist at that point) and alert the event log.
+ * Runs on its own cooldown - it must not borrow the 120s delete-response lock.
+ */
+export async function handleChannelCreate(
+    api: API | API2,
+    db: DbModule,
+    redis: Bun.RedisClient | undefined,
+    guildId: string,
+) {
+    try {
+        const cfg = await getSecurityConfigCached(db, guildId);
+        if (!cfg?.anti_nuke) return;
+
+        const now = Date.now();
+        if ((createCooldowns.get(guildId) ?? 0) > now) return;
+        const stamps = (createWindows.get(guildId) ?? []).filter(t => now - t < WINDOW_MS);
+        stamps.push(now);
+        createWindows.set(guildId, stamps);
+        if (stamps.length < CREATE_THRESHOLD) return;
+        createWindows.delete(guildId);
+        createCooldowns.set(guildId, now + CREATE_COOLDOWN_MS);
+
+        const result = await createBackup(api, db, guildId, "mass channel creation detected (anti-nuke)");
+        const embed: APIEmbed = {
+            title: "🆕 Mass channel creation detected",
+            color: 0xfaa61a,
+            description: [
+                `**Detected:** ${CREATE_THRESHOLD}+ channels created within ${WINDOW_MS / 1000}s.`,
+                result
+                    ? `**Snapshot:** #${result.id} saved right now (${result.channels} channels, ${result.messages} messages) - later deletions can be restored from it.`
+                    : "**Snapshot:** nothing new to store (the current state is already captured).",
+                "If structure starts disappearing from the same actor, the approval flow takes over.",
+            ].join("\n"),
+            timestamp: new Date().toISOString(),
+            footer: { text: "Honeypot anti-nuke" },
+        };
+        const logged = await sendSecurityLog(api, db, guildId, cfg, embed);
+        if (!logged) {
+            const honeypot = await db.getConfig(guildId).catch(() => null);
+            if (honeypot?.log_channel_id) {
+                await api.channels.createMessage(honeypot.log_channel_id, { embeds: [embed], allowed_mentions: { parse: [] } }).catch(() => { });
+            }
+        }
+        await recordSecurityEvent(db, redis, guildId, "anti_nuke", null, null, { stage: "mass_create" });
+        console.log(styleText("yellow", `[anti-nuke] ${guildId}: mass channel creation detected - snapshot ${result ? `#${result.id}` : "unchanged"}`));
+    } catch (err) {
+        console.error(`Anti-nuke channel-create hook failed in ${guildId}: ${err}`);
     }
 }
 
@@ -301,7 +360,7 @@ async function respondToNuke(
                 ? `**Restore:** ${restored.channelsCreated.length} channel(s), ${restored.rolesCreated.length} role(s) recreated from backup #${backupId} — ${restored.membersFixed} member role fix(es), ${restored.messagesRestored} message(s) re-posted\n${restoreSummary(restored)}`
                 : outcome && outcome.error
                     ? `**Restore failed:** ${outcome.error}`
-                    : "**Restore:** no automatic snapshot yet (the first one is taken within ~10 minutes of enabling Anti-Nuke)",
+                    : "**Restore:** no automatic snapshot yet (the first one is taken right after enabling Anti-Nuke, then every 10-60 minutes)",
         ];
 
         const embed: APIEmbed = {

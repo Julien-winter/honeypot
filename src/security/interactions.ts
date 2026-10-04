@@ -118,6 +118,29 @@ function replyEphemeral(api: API | API2, interaction: APIInteraction, body: REST
     });
 }
 
+/**
+ * Acknowledge within Discord's 3s interaction window (fixes DiscordAPIError[10062] on
+ * buttons whose handler does slow work first - approval rounds, restores). The final
+ * text is then sent with sendAfterAck.
+ */
+async function deferEphemeral(api: API | API2, interaction: APIInteraction): Promise<boolean> {
+    try {
+        await api.interactions.defer(interaction.id, interaction.token, { flags: MessageFlags.Ephemeral });
+        return true;
+    } catch {
+        return false; // already acknowledged or token unusable -> reply directly instead
+    }
+}
+
+/** Deliver the final text of a deferred interaction (falls back to a direct reply). */
+function sendAfterAck(api: API | API2, interaction: APIInteraction, deferred: boolean, body: RESTPostAPIChannelMessageJSONBody) {
+    if (!deferred) return replyEphemeral(api, interaction, body);
+    return api.interactions.editReply(interaction.application_id, interaction.token, {
+        ...body,
+        allowed_mentions: { parse: [] },
+    }).catch(() => null); // token expired (>15 min restore) - the progress message already shows the result
+}
+
 function memberHas(interaction: APIInteraction, bits: bigint): boolean {
     if (!interaction.member) return true; // e.g. dm-installed context shouldn't happen here
     return hasPermission(BigInt(interaction.member.permissions ?? "0"), bits);
@@ -326,8 +349,8 @@ export async function handleSecurityInteraction(
             if (newConfig.anti_nuke) notes.push(`Anti-nuke response: **${nukeAction === "strip_ban" ? "strip roles + ban" : nukeAction}**`);
             if (newConfig.anti_phishing && !HAS_MESSAGE_INTENT) notes.push("⚠️ Anti-Phishing needs `HAS_MESSAGE_INTENT=1` (Message Content Intent) to read links.");
             if (initialBackup) notes.push(`Initial backup created: **#${initialBackup.id}** (${initialBackup.channels} channels, ${initialBackup.roles} roles).`);
-            else if (existingSnapshotId !== null) notes.push(`Auto-backup active from snapshot **#${existingSnapshotId}** (refreshed every 10 min, only when something changed).`);
-            else if (pendingInitial) notes.push("Auto-backup runs every **10 minutes** (first one may take up to 10 min).");
+            else if (existingSnapshotId !== null) notes.push(`Auto-backup active from snapshot **#${existingSnapshotId}** (refreshed every 10-60 min, only when something changed - the newest snapshot replaces the old one).`);
+            else if (pendingInitial) notes.push("Auto-backup runs right after setup and then every **10-60 minutes** (first one may take a moment).");
 
             const showRestoreButton = newConfig.anti_nuke || newConfig.backups;
             if (showRestoreButton) {
@@ -415,16 +438,18 @@ export async function handleSecurityInteraction(
         // ------------------------- nuke response: approve / dismiss buttons -------------------------
         if (interaction.type === InteractionType.MessageComponent &&
             (interaction.data.custom_id === "nuke_ok" || interaction.data.custom_id === "nuke_no")) {
+            const deferred = await deferEphemeral(api, interaction);
             const status = await handleNukeApproval(
                 api, db, redis, interaction.application_id, guildId, userId,
                 interaction.data.custom_id === "nuke_ok",
             );
-            await replyEphemeral(api, interaction, { content: status });
+            await sendAfterAck(api, interaction, deferred, { content: status });
             return true;
         }
 
         // ------------------------- restore: request button -------------------------
         if (interaction.type === InteractionType.MessageComponent && interaction.data.custom_id === "sec_restore") {
+            const deferred = await deferEphemeral(api, interaction);
             const isApprover = await isRestoreApprover(api, guildId, userId, interaction.application_id).catch(() => false);
             const logChannel = await requestChannel(db, guildId, interaction.channel_id ?? null);
 
@@ -432,19 +457,18 @@ export async function handleSecurityInteraction(
             if (isApprover) {
                 const backup = await db.getLatestSecurityBackup(guildId).catch(() => null);
                 if (!backup) {
-                    await replyEphemeral(api, interaction, { content: "❌ **No snapshot available yet** - the first backup runs within 10 minutes of enabling Anti-Nuke." });
+                    await sendAfterAck(api, interaction, deferred, { content: "❌ **No snapshot available yet** - the first backup runs right after enabling Anti-Nuke (then every 10-60 minutes)." });
                     return true;
                 }
-                await replyEphemeral(api, interaction, { content: `♻️ **Restore started** from snapshot #${backup.id} - follow the progress message in the event log.` });
+                await sendAfterAck(api, interaction, deferred, { content: `♻️ **Restore started** from snapshot #${backup.id} - follow the progress message in the event log.` });
                 await startApprovedRestore(api, db, redis, guildId, interaction.application_id, logChannel, userId, userId);
                 return true;
             }
 
             // otherwise exactly ONE approval request goes out to an approver (into the event log)
-            const now = Date.now();
             const pending = getPendingRestore(guildId);
             if (pending) {
-                await replyEphemeral(api, interaction, {
+                await sendAfterAck(api, interaction, deferred, {
                     content: `⏳ A restore request from <@${pending.requester}> is already pending approval.\n-# One request at a time - no duplicate pings are sent.`,
                 });
                 return true;
@@ -453,7 +477,7 @@ export async function handleSecurityInteraction(
             const approvers = await getRestoreApprovers(api, guildId, interaction.application_id).catch(() => []);
             const target = approvers.find(id => id !== userId) ?? approvers[0];
             if (!target || !logChannel) {
-                await replyEphemeral(api, interaction, { content: "❌ No approver or event log channel could be determined for this server." });
+                await sendAfterAck(api, interaction, deferred, { content: "❌ No approver or event log channel could be determined for this server." });
                 return true;
             }
             setPendingRestore(guildId, userId);
@@ -470,7 +494,7 @@ export async function handleSecurityInteraction(
                 allowed_mentions: { users: [target] },
             }).catch(() => null);
 
-            await replyEphemeral(api, interaction, {
+            await sendAfterAck(api, interaction, deferred, {
                 content: `⏳ Approval requested from <@${target}> in <#${logChannel}>.\n-# Expires in 5 minutes; only one request can be open at a time.`,
             });
             return true;
@@ -479,6 +503,7 @@ export async function handleSecurityInteraction(
         // ------------------------- restore: approve / cancel buttons -------------------------
         if (interaction.type === InteractionType.MessageComponent &&
             (interaction.data.custom_id === "restore_ok" || interaction.data.custom_id === "restore_no")) {
+            const deferred = await deferEphemeral(api, interaction);
             const approve = interaction.data.custom_id === "restore_ok";
             const pending = getPendingRestore(guildId);
             const retireButtons = () => api.channels.editMessage(interaction.message.channel_id, interaction.message.id, {
@@ -488,7 +513,7 @@ export async function handleSecurityInteraction(
             if (!pending) {
                 clearPendingRestore(guildId);
                 await retireButtons();
-                await replyEphemeral(api, interaction, { content: "⌛ This restore request has expired - ask for a new one with the Restore button." });
+                await sendAfterAck(api, interaction, deferred, { content: "⌛ This restore request has expired - ask for a new one with the Restore button." });
                 return true;
             }
 
@@ -496,17 +521,17 @@ export async function handleSecurityInteraction(
 
             if (!approve) {
                 if (userId !== pending.requester && !isApprover) {
-                    await replyEphemeral(api, interaction, { content: "❌ Only the requester or an approver can cancel this request." });
+                    await sendAfterAck(api, interaction, deferred, { content: "❌ Only the requester or an approver can cancel this request." });
                     return true;
                 }
                 clearPendingRestore(guildId);
                 await retireButtons();
-                await replyEphemeral(api, interaction, { content: `🗑️ Restore request by <@${pending.requester}> was cancelled.` });
+                await sendAfterAck(api, interaction, deferred, { content: `🗑️ Restore request by <@${pending.requester}> was cancelled.` });
                 return true;
             }
 
             if (!isApprover) {
-                await replyEphemeral(api, interaction, {
+                await sendAfterAck(api, interaction, deferred, {
                     content: "❌ Only the **server owner** or the **bot owner** can approve a restore.\n-# This keeps a restore a deliberate, single-approval action.",
                 });
                 return true;
@@ -517,12 +542,12 @@ export async function handleSecurityInteraction(
 
             const backup = await db.getLatestSecurityBackup(guildId).catch(() => null);
             if (!backup) {
-                await replyEphemeral(api, interaction, { content: "❌ **No snapshot available yet** - the first backup runs within 10 minutes of enabling Anti-Nuke." });
+                await sendAfterAck(api, interaction, deferred, { content: "❌ **No snapshot available yet** - the first backup runs right after enabling Anti-Nuke (then every 10-60 minutes)." });
                 return true;
             }
 
             const logChannel = await requestChannel(db, guildId, interaction.channel_id ?? null);
-            await replyEphemeral(api, interaction, {
+            await sendAfterAck(api, interaction, deferred, {
                 content: `✅ **Approved** by <@${userId}> - restoring snapshot #${backup.id}. Follow the progress message in the event log.`,
             });
             await startApprovedRestore(api, db, redis, guildId, interaction.application_id, logChannel, pending.requester, userId);

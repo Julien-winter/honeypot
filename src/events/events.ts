@@ -21,6 +21,7 @@ import guildDelete from "./guild-delete";
 import guildUpdate from "./guild-update";
 import guildMemberAdd from "./guild-member-add";
 import channelDelete from "./channel-delete";
+import channelCreate from "./channel-create";
 import threadDelete from "./thread-delete";
 import roleDelete from "./role-delete";
 import messageDelete from "./message-delete";
@@ -34,6 +35,7 @@ export const eventHandlers = [
     guildUpdate,
     guildMemberAdd,
     channelDelete,
+    channelCreate,
     threadDelete,
     roleDelete,
     messageDelete,

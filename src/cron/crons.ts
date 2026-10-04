@@ -5,6 +5,8 @@ export interface Cron {
     name: string;
     frequency: Bun.CronWithAutocomplete | "once" & {};
     enabled?: boolean;
+    /** Also execute once immediately on bot start (before the first cron tick). */
+    bootRun?: boolean;
     run: (api: API | API2, db: typeof import("../utils/db"), redis?: Bun.RedisClient) => Promise<void>;
 }
 
@@ -38,6 +40,12 @@ export const runCrons = (api: API | API2, db: typeof import("../utils/db"), redi
                 console.log(`Error running cron ${cron.name}: ${err}`);
             }).then(() => running--);
         } else {
+            if (cron.bootRun) {
+                running++;
+                cron.run(api, db, redis).catch(err => {
+                    console.log(`Error running cron ${cron.name}: ${err}`);
+                }).then(() => running--);
+            }
             const cronJob = Bun.cron(cron.frequency, () => {
                 running++;
                 cron.run(api, db, redis).catch(err => {

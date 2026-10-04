@@ -161,7 +161,7 @@ export async function runRestore(
     const backup = await db.getLatestSecurityBackup(guildId).catch(() => null);
     if (!backup) {
         inFlight.delete(guildId);
-        return { ok: false, backupId: null, result: null, error: "No snapshot available yet - the first backup runs within 10 minutes of enabling Anti-Nuke." };
+        return { ok: false, backupId: null, result: null, error: "No snapshot available yet - the first backup runs right after enabling Anti-Nuke (then every 10-60 minutes)." };
     }
 
     const restoreId = await db.startSecurityRestore(guildId, backup.id, opts.requestedBy ?? null, opts.approvedBy ?? null);

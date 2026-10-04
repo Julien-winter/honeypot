@@ -250,27 +250,17 @@ function drawGrowth(history) {
   function X(idx) { return history.length === 1 ? ((L + W - R) / 2) : (L + (W - L - R) * idx / (history.length - 1)); }
   function YB(v) { return T + (H - T - B) * (1 - v / niceB); }
   function YG(v) { return T + (H - T - B) * (1 - v / niceG); }
-  function smoothPath(pts) {
+  // straight segments between data points: no curve overshoot (a smoothed line may
+  // dip below 0 or invent value changes that never happened)
+  function linePath(pts) {
     if (pts.length < 2) return '';
-    if (pts.length === 2) return 'M'+pts[0][0].toFixed(1)+','+pts[0][1].toFixed(1)+'L'+pts[1][0].toFixed(1)+','+pts[1][1].toFixed(1);
-    var d = 'M'+pts[0][0].toFixed(1)+','+pts[0][1].toFixed(1);
-    for (var j = 0; j < pts.length - 1; j++) {
-      var p0 = pts[Math.max(j - 1, 0)];
-      var p1 = pts[j];
-      var p2 = pts[Math.min(j + 1, pts.length - 1)];
-      var p3 = pts[Math.min(j + 2, pts.length - 1)];
-      var tension = 0.3;
-      var cp1x = p1[0] + (p2[0] - p0[0]) * tension;
-      var cp1y = p1[1] + (p2[1] - p0[1]) * tension;
-      var cp2x = p2[0] - (p3[0] - p1[0]) * tension;
-      var cp2y = p2[1] - (p3[1] - p1[1]) * tension;
-      d += 'C'+cp1x.toFixed(1)+','+cp1y.toFixed(1)+' '+cp2x.toFixed(1)+','+cp2y.toFixed(1)+' '+p2[0].toFixed(1)+','+p2[1].toFixed(1);
-    }
+    var d = 'M' + pts[0][0].toFixed(1) + ',' + pts[0][1].toFixed(1);
+    for (var j = 1; j < pts.length; j++) d += 'L' + pts[j][0].toFixed(1) + ',' + pts[j][1].toFixed(1);
     return d;
   }
   var h = '<defs>'
-    + '<linearGradient id="gTotal" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#60a5fa" stop-opacity="0.3"/><stop offset="100%" stop-color="#60a5fa" stop-opacity="0.02"/></linearGradient>'
-    + '<filter id="glowG"><feGaussianBlur stdDeviation="3" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>'
+    + '<linearGradient id="gTotal" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#60a5fa" stop-opacity="0.26"/><stop offset="100%" stop-color="#60a5fa" stop-opacity="0.02"/></linearGradient>'
+    + '<filter id="glowG"><feGaussianBlur stdDeviation="2" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>'
     + '</defs>';
   var g;
   for (g = 0; g <= 4; g++) {
@@ -279,14 +269,16 @@ function drawGrowth(history) {
     h += '<text x="' + (L - 8) + '" y="' + (y + 4) + '" fill="#60a5fa" font-size="11" text-anchor="end" font-family="Space Grotesk,system-ui" opacity="0.8">' + Math.round(niceB * (1 - g / 4)) + '</text>';
     h += '<text x="' + (W - R + 8) + '" y="' + (y + 4) + '" fill="#f5a623" font-size="11" text-anchor="start" font-family="Space Grotesk,system-ui" opacity="0.8">' + Math.round(niceG * (1 - g / 4)) + '</text>';
   }
+  h += '<text x="' + L + '" y="10" fill="#60a5fa" font-size="9" letter-spacing="0.7" font-family="Space Grotesk,system-ui" opacity="0.75">MODERATIONS</text>';
+  h += '<text x="' + (W - R) + '" y="10" fill="#f5a623" font-size="9" letter-spacing="0.7" text-anchor="end" font-family="Space Grotesk,system-ui" opacity="0.75">GUILDS</text>';
   var ptsB = [], ptsG = [];
   for (i = 0; i < history.length; i++) {
     ptsB.push([X(i), YB(history[i].moderations)]);
     ptsG.push([X(i), YG(history[i].guilds)]);
   }
   var base = (H - B).toFixed(1);
-  var pathB = smoothPath(ptsB);
-  var pathG = smoothPath(ptsG);
+  var pathB = linePath(ptsB);
+  var pathG = linePath(ptsG);
   h += '<path d="' + pathB + 'L' + X(history.length - 1).toFixed(1) + ',' + base + 'L' + X(0).toFixed(1) + ',' + base + 'Z" fill="url(#gTotal)"/>';
   h += '<path d="' + pathB + '" fill="none" stroke="#60a5fa" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" filter="url(#glowG)"/>';
   h += '<path d="' + pathG + '" fill="none" stroke="#f5a623" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" filter="url(#glowG)" stroke-dasharray="6,3"/>';
@@ -312,7 +304,8 @@ function drawChart(daily) {
   var padded = (function(){
     var map={}; for(var i=0;i<daily.length;i++) map[daily[i].date]=daily[i];
     var nonZero=0; for(var i=0;i<daily.length;i++) if(daily[i].bans>0||daily[i].servers>0) nonZero++;
-    var windowSize = nonZero<=2 ? 5 : (nonZero<=5 ? 7 : 14);
+    // min 7 days to match the rolling "Bans (7d)" / "Triggered Servers (7d)" cards
+    var windowSize = nonZero<=2 ? 7 : (nonZero<=6 ? 14 : 30);
     var last = daily.length ? new Date(daily[daily.length-1].date+'T12:00:00') : new Date();
     var out=[]; for(var k=windowSize-1;k>=0;k--){ var d=new Date(last); d.setDate(last.getDate()-k); var iso=d.toISOString().slice(0,10); out.push(map[iso]||{date:iso,bans:0,servers:0}); }
     return out;
@@ -322,7 +315,7 @@ function drawChart(daily) {
     svg.innerHTML = '<defs><linearGradient id="emptyGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#34d399" stop-opacity="0.12"/><stop offset="100%" stop-color="#34d399" stop-opacity="0"/></linearGradient></defs>'
       + '<rect x="'+L+'" y="90" width="'+(W-L-R)+'" height="110" rx="10" fill="url(#emptyGrad)" stroke="#1e2a24"/>'
       + '<text x="'+(W/2)+'" y="138" fill="#71718a" font-size="13" text-anchor="middle" font-family="Space Grotesk,system-ui">No bans yet — chart fills as activity grows</text>'
-      + '<text x="'+(W/2)+'" y="158" fill="#555" font-size="11" text-anchor="middle" font-family="Space Grotesk,system-ui">14-day window • updates live</text>';
+      + '<text x="'+(W/2)+'" y="158" fill="#555" font-size="11" text-anchor="middle" font-family="Space Grotesk,system-ui">'+padded.length+'-day window • updates live</text>';
     return;
   }
   daily = padded;
@@ -461,7 +454,9 @@ function drawSecChart(daily) {
   var padded = (function(){
     var map={}; for(var i=0;i<daily.length;i++) map[daily[i].date]=daily[i];
     var nonZero=0; for(var i=0;i<daily.length;i++) if(daily[i].incidents>0) nonZero++;
-    var windowSize = nonZero<=2 ? 5 : (nonZero<=5 ? 7 : 14);
+    // min 7 days: the stat cards report a rolling 7d window - a 5 day chart would
+    // contradict "Incidents (7d): N" by claiming there were none
+    var windowSize = nonZero<=2 ? 7 : (nonZero<=6 ? 14 : 30);
     var last = daily.length ? new Date(daily[daily.length-1].date+'T12:00:00') : new Date();
     var out=[]; for(var k=windowSize-1;k>=0;k--){ var d=new Date(last); d.setDate(last.getDate()-k); var iso=d.toISOString().slice(0,10); out.push(map[iso]||{date:iso,incidents:0,byType:{}}); }
     return out;

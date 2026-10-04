@@ -81,7 +81,9 @@ const MAX_BACKUP_RAW = 2_000_000;
 const MAX_BACKUP_STORED = 400_000;
 /** How many messages to capture per text channel (BACKUP_MESSAGES=0 disables message history). */
 function messageLimit(): number {
-    const v = Number(process.env.BACKUP_MESSAGES);
+    const raw = (process.env.BACKUP_MESSAGES ?? "").trim();
+    if (raw === "") return 30;
+    const v = Number(raw);
     if (!Number.isFinite(v) || v < 0) return 30;
     return Math.min(50, Math.floor(v));
 }
@@ -130,6 +132,23 @@ function defaultAvatar(userId: string): string {
 function authorAvatar(author: APIMessage["author"]): string {
     if (author.avatar) return `https://cdn.discordapp.com/avatars/${author.id}/${author.avatar}.png?size=64`;
     return defaultAvatar(author.id);
+}
+
+/**
+ * Text of a captured message. Falls back to embed titles/descriptions and attachment
+ * URLs when `content` is empty (messages from bots without the message-content intent
+ * arrive with empty content but their embeds/attachments intact).
+ */
+function messageText(m: APIMessage): string | null {
+    if (m.content) return m.content;
+    const parts: string[] = [];
+    for (const e of m.embeds ?? []) {
+        if (e.title) parts.push(e.title);
+        if (e.description) parts.push(e.description);
+    }
+    for (const a of m.attachments ?? []) if (a.url) parts.push(a.url);
+    const text = parts.filter(Boolean).join("\n");
+    return text ? text.slice(0, 1900) : null;
 }
 
 function errMsg(err: unknown): string {
@@ -246,6 +265,7 @@ export async function createBackup(
         const members = await fetchMembersWithRoles(api, guildId).catch(() => [] as BackupMember[]);
 
         const messages: Record<string, BackupMessage[]> = {};
+        let emptyMessages = 0, failedChannels = 0;
         if (limit > 0) {
             const textChannels = channels.filter(c => c.type === ChannelType.GuildText || c.type === ChannelType.GuildAnnouncement);
             await pool(textChannels, 4, async (ch) => {
@@ -254,16 +274,20 @@ export async function createBackup(
                     const list: BackupMessage[] = [];
                     for (let i = msgs.length - 1; i >= 0; i--) { // oldest first
                         const m = msgs[i]!;
-                        if (!m.content) continue;
+                        const text = messageText(m);
+                        if (!text) { emptyMessages++; continue; }
                         const globalName = (m.author as { global_name?: string | null }).global_name ?? null;
                         const author = (globalName ?? m.author.username ?? "Unknown").slice(0, 80);
-                        list.push({ c: m.content, a: author, av: authorAvatar(m.author) });
+                        list.push({ c: text, a: author, av: authorAvatar(m.author) });
                     }
                     if (list.length) messages[ch.id] = list;
-                } catch {
-                    // channel unreadable - the backup simply won't carry its history
+                } catch (err) {
+                    failedChannels++;
+                    if (failedChannels <= 3) console.error(`[backup] ${guildId}: #${ch.name}: getMessages failed: ${err}`);
                 }
             });
+            const captured = Object.values(messages).reduce((n, l) => n + l.length, 0);
+            console.log(`[backup] ${guildId}: captured ${captured} messages in ${Object.keys(messages).length}/${textChannels.length} channels (limit ${limit}, ${emptyMessages} without text, ${failedChannels} unreadable)`);
         }
 
         const data: BackupData = {
