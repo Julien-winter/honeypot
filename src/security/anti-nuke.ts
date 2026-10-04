@@ -9,7 +9,8 @@ import { getSecurityConfigCached, type DbModule } from "./config";
 import { recordSecurityEvent, sendSecurityLog } from "./notify";
 import { fetchAuditLogEntries } from "./audit-log";
 import { createBackup, restoreSummary } from "./backup";
-import { clearPendingRestore, getRestoreApprovers, isRestoreApprover, runRestore } from "./restore-run";
+import { clearPendingRestore, getRestoreApprovers, isRestoreApprover, isRestoreInFlight, runRestore } from "./restore-run";
+import { hasRecentStructureDeletion, noteStructureDeletion } from "./structure-state";
 
 type StructureKind = "channel" | "role";
 
@@ -110,6 +111,17 @@ async function isTrustedExecutor(api: API | API2, guildId: string, userId: strin
     }
 }
 
+/** Who created channels recently? Newest ChannelCreate audit entry (null = unknown). */
+async function resolveCreateExecutor(api: API | API2, guildId: string): Promise<string | null> {
+    try {
+        const entries = await fetchAuditLogEntries(api, guildId, { action_type: AuditLogEvent.ChannelCreate, limit: 10 });
+        const recent = entries.find(e => Date.now() - getDiscordDate(e.id) < 120_000 && e.user_id);
+        return recent?.user_id ?? null;
+    } catch {
+        return null;
+    }
+}
+
 /**
  * Called from ChannelDelete / RoleDelete.
  *  - first deletion: posts an approval request (nothing is changed yet) - a deliberate
@@ -125,6 +137,10 @@ export async function handleStructureDelete(
     guildId: string,
     kind: StructureKind,
 ) {
+    // note the deletion for EVERY guild (before the anti-nuke check): auto-snapshots
+    // must stand back while structure is missing, or they would replace the good
+    // restore point with the damaged state (backup-only guilds included)
+    noteStructureDeletion(guildId);
     try {
         const cfg = await getSecurityConfigCached(db, guildId);
         if (!cfg?.anti_nuke) return;
@@ -167,12 +183,17 @@ export async function handleStructureDelete(
  * Called from ChannelCreate. Anti-nuke needs a restore point BEFORE a raid fills the
  * server with channels: when 3+ channels appear within 60s, snapshot immediately
  * (the original channels still exist at that point) and alert the event log.
- * Runs on its own cooldown - it must not borrow the 120s delete-response lock.
+ *
+ * Guards (in order): never during our own restore, never right after deletions
+ * (the deletion side owns the restore + the good snapshot), never when the
+ * creator is this bot. Runs on its own cooldown - it must not borrow the 120s
+ * delete-response lock.
  */
 export async function handleChannelCreate(
     api: API | API2,
     db: DbModule,
     redis: Bun.RedisClient | undefined,
+    applicationId: string,
     guildId: string,
 ) {
     try {
@@ -181,11 +202,28 @@ export async function handleChannelCreate(
 
         const now = Date.now();
         if ((createCooldowns.get(guildId) ?? 0) > now) return;
+        // our own recreations happen mid-restore: the post-restore snapshot covers them
+        if (isRestoreInFlight(guildId)) return;
+
         const stamps = (createWindows.get(guildId) ?? []).filter(t => now - t < WINDOW_MS);
         stamps.push(now);
         createWindows.set(guildId, stamps);
         if (stamps.length < CREATE_THRESHOLD) return;
-        createWindows.delete(guildId);
+        createWindows.delete(guildId); // consume the batch - every path below resets it
+
+        // recent deletions: the restore is running (or about to) from the GOOD snapshot -
+        // snapshotting the damaged state now would replace it (only one is kept)
+        if (hasRecentStructureDeletion(guildId)) {
+            console.log(styleText("dim", `[anti-nuke] ${guildId}: channel creations after a deletion - skipping extra snapshot`));
+            return;
+        }
+        // creators that are this bot (restore recreations that outlived the restore run)
+        const creator = await resolveCreateExecutor(api, guildId);
+        if (creator && creator === applicationId) {
+            console.log(styleText("dim", `[anti-nuke] ${guildId}: own channel recreation - skipping mass-create response`));
+            return;
+        }
+
         createCooldowns.set(guildId, now + CREATE_COOLDOWN_MS);
 
         const result = await createBackup(api, db, guildId, "mass channel creation detected (anti-nuke)");
@@ -475,7 +513,19 @@ export async function handleNukeApproval(
                 footer: { text: "Honeypot anti-nuke" },
             };
             const logged = await sendSecurityLog(api, db, guildId, cfg, embed);
-            if (!logged) console.log(`[anti-nuke] ${guildId}: dismissed -> ${outcome.ok ? "restored" : "restore failed"}`);
+            if (!logged) {
+                // same fallback as the triggered response: never lose the result silently
+                try {
+                    const honeypot = await db.getConfig(guildId);
+                    if (honeypot?.log_channel_id) {
+                        await api.channels.createMessage(honeypot.log_channel_id, { embeds: [embed], allowed_mentions: { parse: [] } });
+                    } else {
+                        console.log(`[anti-nuke] ${guildId}: dismissed -> ${outcome.ok ? "restored" : "restore failed"}`);
+                    }
+                } catch {
+                    console.log(`[anti-nuke] ${guildId}: dismissed -> ${outcome.ok ? "restored" : "restore failed"}`);
+                }
+            }
 
             await recordSecurityEvent(db, redis, guildId, "anti_nuke", userId, null, { stage: "dismissed", kind: pending.kind });
             return outcome.ok

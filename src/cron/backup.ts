@@ -1,6 +1,8 @@
 import type { Cron } from "./crons";
 import { styleText } from "node:util";
 import { createBackup } from "../security/backup";
+import { isRestoreInFlight } from "../security/restore-run";
+import { hasRecentStructureDeletion } from "../security/structure-state";
 
 let running = false;
 
@@ -41,6 +43,10 @@ const cron: Cron = {
             for (const cfg of guilds) {
                 const due = nextDue.get(cfg.guild_id) ?? 0;
                 if (now < due) continue;
+                // never snapshot a guild mid-restore or right after a deletion: only one
+                // snapshot is kept, so a capture of the damaged state would wipe the good one
+                if (isRestoreInFlight(cfg.guild_id)) continue;
+                if (hasRecentStructureDeletion(cfg.guild_id)) continue;
                 // spread guilds over 10-60 minutes so no tick snapshots every server at once
                 nextDue.set(cfg.guild_id, now + SLOT_MIN_MS + Math.floor(Math.random() * (SLOT_MAX_MS - SLOT_MIN_MS)));
                 try {

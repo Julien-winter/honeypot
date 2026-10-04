@@ -14,9 +14,15 @@ import {
     type RestoreProgress,
     type RestoreResult,
 } from "./backup";
+import { hasRecentStructureDeletion } from "./structure-state";
 
 /** One restore per guild at a time. */
 const inFlight = new Set<string>();
+
+/** True while a restore is running in this guild (auto-snapshots must stand back). */
+export function isRestoreInFlight(guildId: string): boolean {
+    return inFlight.has(guildId);
+}
 
 /** Cached bot owners (application owner / team) - the "bot inviter" side of the approval. */
 let appOwnerCache: { ids: Set<string>; at: number } | null = null;
@@ -227,9 +233,15 @@ export async function runRestore(
             trigger: opts.reason.startsWith("Anti-nuke") ? "anti_nuke" : "manual",
         });
 
-        // keep a fresh snapshot of the restored state
+        // keep a fresh snapshot of the restored state - but NEVER right after a
+        // deletion: the pre-attack snapshot is the good one, and a snapshot taken
+        // while the user is still deleting would replace it (only one is kept).
         if (opts.backupAfter !== false) {
-            await createBackup(api, db, guildId, "post restore snapshot").catch(() => null);
+            if (hasRecentStructureDeletion(guildId)) {
+                console.log(`[restore] ${guildId}: snapshot refresh skipped (structure changed recently - keeping the existing snapshot)`);
+            } else {
+                await createBackup(api, db, guildId, "post restore snapshot").catch(() => null);
+            }
         }
 
         return { ok: true, backupId: backup.id, result, error: null };

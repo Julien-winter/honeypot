@@ -1,6 +1,7 @@
 import {
     ChannelType,
     Routes,
+    RESTJSONErrorCodes,
     type APIMessage,
     type APIChannel,
     type APIRole,
@@ -265,7 +266,7 @@ export async function createBackup(
         const members = await fetchMembersWithRoles(api, guildId).catch(() => [] as BackupMember[]);
 
         const messages: Record<string, BackupMessage[]> = {};
-        let emptyMessages = 0, failedChannels = 0;
+        let emptyMessages = 0, failedChannels = 0, vanishedChannels = 0;
         if (limit > 0) {
             const textChannels = channels.filter(c => c.type === ChannelType.GuildText || c.type === ChannelType.GuildAnnouncement);
             await pool(textChannels, 4, async (ch) => {
@@ -282,12 +283,22 @@ export async function createBackup(
                     }
                     if (list.length) messages[ch.id] = list;
                 } catch (err) {
+                    // channel was deleted while capturing -> the snapshot would keep the
+                    // channel but lose its messages: never store that (only one is kept)
+                    if ((err as { code?: number })?.code === RESTJSONErrorCodes.UnknownChannel) {
+                        vanishedChannels++;
+                        return;
+                    }
                     failedChannels++;
                     if (failedChannels <= 3) console.error(`[backup] ${guildId}: #${ch.name}: getMessages failed: ${err}`);
                 }
             });
             const captured = Object.values(messages).reduce((n, l) => n + l.length, 0);
             console.log(`[backup] ${guildId}: captured ${captured} messages in ${Object.keys(messages).length}/${textChannels.length} channels (limit ${limit}, ${emptyMessages} without text, ${failedChannels} unreadable)`);
+            if (vanishedChannels > 0) {
+                console.log(`[backup] ${guildId}: not storing - ${vanishedChannels} channel(s) disappeared during capture (retrying on the next run)`);
+                return null;
+            }
         }
 
         const data: BackupData = {
