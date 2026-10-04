@@ -1,4 +1,5 @@
 import * as db from "./utils/db";
+import type { SecurityEventType, SecurityModule } from "./utils/db";
 import { pageHtml } from "./stats-page";
 import { handleDashboard } from "./dashboard";
 import { docsHtml } from "./docs-page";
@@ -30,6 +31,13 @@ export type PublicStats = {
     donateLtc: string;
     leaderboard: { name: string; icon: string | null; moderations: number }[];
     history: { date: string; guilds: number; moderations: number }[];
+    security: {
+        totals: Record<SecurityEventType, number>;
+        last7dIncidents: number;
+        dailyStats: { date: string; incidents: number; byType: Record<string, number> }[];
+        modules: Record<SecurityModule, number>;
+        protectedServers: number;
+    };
     community: {
         name: string;
         online: number;
@@ -146,6 +154,7 @@ async function buildPublicStats(): Promise<PublicStats> {
         community,
         leaderboard,
         history,
+        security: full.security,
         updatedAt: new Date().toISOString(),
     };
     cache = { at: Date.now(), data };

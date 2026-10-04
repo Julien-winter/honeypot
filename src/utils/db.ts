@@ -61,8 +61,20 @@ export type SecurityBackupRow = {
   guild_id: string;
   created_at: number;
   reason: string | null;
-  meta: { channels: number; roles: number } | null;
+  meta: { channels: number; roles: number; messages?: number; bytes?: number } | null;
   data: string;
+};
+
+export type SecurityRestoreRow = {
+  id: number;
+  guild_id: string;
+  backup_id: number | null;
+  status: string;
+  progress: Record<string, unknown> | null;
+  requested_by: string | null;
+  approved_by: string | null;
+  started_at: number;
+  finished_at: number | null;
 };
 
 export type QuarantineRow = {
@@ -416,6 +428,33 @@ CREATE INDEX IF NOT EXISTS idx_security_events_stats ON security_events(timestam
 CREATE INDEX IF NOT EXISTS idx_security_events_type ON security_events(type, timestamp);
 `;
     }
+  },
+  {
+    version: 15,
+    name: "restore progress tracking",
+    up: async (tx) => {
+      await tx`
+CREATE TABLE IF NOT EXISTS security_restores (
+  id INTEGER PRIMARY KEY ${autoincrementSyntax},
+  guild_id BIGINT NOT NULL,
+  backup_id INTEGER,
+  status TEXT NOT NULL DEFAULT 'running',
+  progress TEXT,
+  requested_by BIGINT,
+  approved_by BIGINT,
+  started_at BIGINT NOT NULL,
+  finished_at BIGINT,
+  FOREIGN KEY (guild_id) REFERENCES security_config(guild_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_security_restores_guild ON security_restores(guild_id, started_at);
+`;
+      if (db.options.adapter === "mysql") {
+        try {
+          await tx`ALTER TABLE security_backups MODIFY data MEDIUMTEXT NOT NULL`;
+        } catch { /* already widened */ }
+      }
+    }
   }
 ];
 export async function initDb() {
@@ -641,7 +680,7 @@ export async function unsetSecurityLogChannel(guild_id: string) {
 export async function addSecurityBackup(
   guild_id: string,
   data: string,
-  meta: { channels: number; roles: number },
+  meta: { channels: number; roles: number; messages?: number; bytes?: number },
   reason: string | null,
   keep: number = 4,
 ): Promise<number> {
@@ -699,6 +738,70 @@ export async function getLatestSecurityBackup(guild_id: string): Promise<Securit
     meta: row.meta ? JSON.parse(row.meta) : null,
     data: row.data,
   };
+}
+
+// --- restore progress tracking (best-effort: a failed status write never blocks a restore) ---
+
+function parseRestoreRow(r: any): SecurityRestoreRow {
+  return {
+    id: Number(r.id),
+    guild_id: r.guild_id.toString(),
+    backup_id: r.backup_id == null ? null : Number(r.backup_id),
+    status: String(r.status),
+    progress: r.progress ? JSON.parse(r.progress) : null,
+    requested_by: r.requested_by == null ? null : r.requested_by.toString(),
+    approved_by: r.approved_by == null ? null : r.approved_by.toString(),
+    started_at: Number(r.started_at),
+    finished_at: r.finished_at == null ? null : Number(r.finished_at),
+  };
+}
+
+export async function startSecurityRestore(
+  guild_id: string,
+  backup_id: number | null,
+  requested_by: string | null = null,
+  approved_by: string | null = null,
+): Promise<number | null> {
+  try {
+    const now = Math.floor(Date.now() / 1000);
+    await db`
+      INSERT INTO security_restores (guild_id, backup_id, status, requested_by, approved_by, started_at)
+      VALUES (${guild_id}, ${backup_id}, 'running', ${requested_by}, ${approved_by}, ${now})`;
+    const [row] = await db`SELECT MAX(id) AS id FROM security_restores WHERE guild_id = ${guild_id}`;
+    return row?.id == null ? null : Number(row.id);
+  } catch (err) {
+    console.error(`Failed to start restore status for ${guild_id}: ${err}`);
+    return null;
+  }
+}
+
+export async function updateSecurityRestore(id: number, status: string, progress: Record<string, unknown> | null): Promise<void> {
+  try {
+    await db`UPDATE security_restores SET status = ${status}, progress = ${progress ? JSON.stringify(progress) : null} WHERE id = ${id}`;
+  } catch (err) {
+    console.error(`Failed to update restore status #${id}: ${err}`);
+  }
+}
+
+export async function finishSecurityRestore(id: number, status: string, progress: Record<string, unknown> | null): Promise<void> {
+  try {
+    const now = Math.floor(Date.now() / 1000);
+    await db`UPDATE security_restores SET status = ${status}, progress = ${progress ? JSON.stringify(progress) : null}, finished_at = ${now} WHERE id = ${id}`;
+  } catch (err) {
+    console.error(`Failed to finish restore status #${id}: ${err}`);
+  }
+}
+
+export async function getLatestSecurityRestore(guild_id: string): Promise<SecurityRestoreRow | null> {
+  try {
+    const [row] = await db`
+      SELECT id, CAST(guild_id AS VARCHAR(20)) AS guild_id, backup_id, status, progress, requested_by, approved_by, started_at, finished_at
+      FROM security_restores WHERE guild_id = ${guild_id} ORDER BY id DESC LIMIT 1`;
+    return row ? parseRestoreRow(row) : null;
+  } catch (err) {
+    console.error(`Failed to read restore status for ${guild_id}: ${err}`);
+    return null;
+  }
 }
 
 // --- bot quarantine ---
@@ -1347,8 +1450,9 @@ export async function getFullStats(): Promise<{
   security: {
     totals: Record<SecurityEventType, number>;
     last7dIncidents: number;
-    dailyStats: { date: string; incidents: number; }[];
+    dailyStats: { date: string; incidents: number; byType: Record<string, number>; }[];
     modules: Record<SecurityModule, number>;
+    protectedServers: number;
   };
 }> {
   const now = new Date();
@@ -1370,7 +1474,8 @@ export async function getFullStats(): Promise<{
         (SELECT COUNT(*) FROM security_config WHERE anti_spam = 1) AS mod_anti_spam,
         (SELECT COUNT(*) FROM security_config WHERE anti_phishing = 1) AS mod_anti_phishing,
         (SELECT COUNT(*) FROM security_config WHERE event_log = 1) AS mod_event_log,
-        (SELECT COUNT(*) FROM security_config WHERE backups = 1) AS mod_backups
+        (SELECT COUNT(*) FROM security_config WHERE backups = 1) AS mod_backups,
+        (SELECT COUNT(*) FROM security_config WHERE anti_nuke = 1 OR quarantine = 1 OR anti_spam = 1 OR anti_phishing = 1 OR event_log = 1) AS mod_protected
     `,
     db`
       SELECT timestamp, CAST(guild_id AS VARCHAR(20)) AS guild_id
@@ -1384,7 +1489,7 @@ export async function getFullStats(): Promise<{
       GROUP BY action;
     `,
     db`SELECT type, COUNT(*) AS count FROM security_events GROUP BY type`,
-    db`SELECT timestamp FROM security_events WHERE timestamp >= ${fourteenDaysAgoSec} ORDER BY timestamp ASC`,
+    db`SELECT timestamp, type FROM security_events WHERE timestamp >= ${fourteenDaysAgoSec} ORDER BY timestamp ASC`,
   ]);
 
   let last7dModerations = 0;
@@ -1425,14 +1530,19 @@ export async function getFullStats(): Promise<{
   for (const row of securityTotalRows) securityTotals[row.type] = Number(row.count);
 
   let last7dSecurityIncidents = 0;
-  const securityDailyMap = new Map<number, number>();
+  const securityDailyMap = new Map<number, { incidents: number; byType: Record<string, number> }>();
   for (const row of securityEvents) {
     const ts = row.timestamp;
+    // backup/restore are our own responses, not attacks - keep them out of incident counts
+    if (row.type === "backup" || row.type === "restore") continue;
     if (ts < fourteenDaysAgoSec) continue;
     if (ts >= sevenDaysAgoSec) last7dSecurityIncidents++;
     if (ts >= todayStartSec) continue;
     const dayStartTimestamp = ts - (ts % SECONDS_IN_DAY);
-    securityDailyMap.set(dayStartTimestamp, (securityDailyMap.get(dayStartTimestamp) ?? 0) + 1);
+    let day = securityDailyMap.get(dayStartTimestamp);
+    if (!day) { day = { incidents: 0, byType: {} }; securityDailyMap.set(dayStartTimestamp, day); }
+    day.incidents++;
+    day.byType[row.type] = (day.byType[row.type] ?? 0) + 1;
   }
 
   return {
@@ -1459,9 +1569,10 @@ export async function getFullStats(): Promise<{
       last7dIncidents: last7dSecurityIncidents,
       dailyStats: Array.from(securityDailyMap.entries())
         .sort((a, b) => a[0] - b[0])
-        .map(([dayTimestamp, incidents]) => ({
+        .map(([dayTimestamp, v]) => ({
           date: new Date(dayTimestamp * 1000).toISOString().split('T')[0]!,
-          incidents,
+          incidents: v.incidents,
+          byType: v.byType,
         })),
       modules: {
         anti_nuke: Number(meta.mod_anti_nuke),
@@ -1471,6 +1582,7 @@ export async function getFullStats(): Promise<{
         event_log: Number(meta.mod_event_log),
         backups: Number(meta.mod_backups),
       },
+      protectedServers: Number(meta.mod_protected),
     },
   };
 }

@@ -29,7 +29,7 @@ export const pageHtml = `<!DOCTYPE html>
   .card .label { font-size: .8rem; color: #9a9ab0; margin-bottom: 6px; text-transform: uppercase; letter-spacing: .4px; }
   .card .value { font-size: 1.9rem; font-weight: 800; }
   .card .extra { font-size: .8rem; color: #9a9ab0; margin-top: 6px; }
-  .green { color: #34d399; } .blue { color: #60a5fa; } .orange { color: #f5a623; } .red { color: #f87171; } .gray { color: #71718a; }
+  .green { color: #34d399; } .blue { color: #60a5fa; } .orange { color: #f5a623; } .red { color: #f87171; } .gray { color: #71718a; } .violet { color: #a78bfa; }
   .chart-card { background: linear-gradient(180deg, rgba(26,26,36,.98), rgba(16,16,22,.98)); border: 1px solid #23232e; border-radius: 16px; padding: 18px 20px; margin-top: 16px; position: relative; overflow: hidden; box-shadow: 0 8px 28px rgba(0,0,0,.35), inset 0 1px 0 rgba(255,255,255,.04); }
   .chart-card::before { content:""; position:absolute; inset:0; background: radial-gradient(600px 200px at 50% 0%, rgba(52,211,153,.07), transparent 70%); pointer-events:none; }
   .legend { display: flex; justify-content: space-between; font-size: .85rem; color: #9a9ab0; margin-bottom: 10px; position: relative; }
@@ -82,6 +82,21 @@ export const pageHtml = `<!DOCTYPE html>
   <div class="chart-card" id="chartWrap">
     <div class="legend"><span><span class="dot" style="background:#34d399;color:#34d399"></span><b>Bans</b> <span style="opacity:.6">bars</span></span><span><span style="opacity:.6">line</span> <b>Servers</b><span class="dot" style="background:#f5a623;color:#f5a623;margin-left:6px;margin-right:0"></span></span></div>
     <div style="position:relative"><svg id="chart" viewBox="0 0 760 300" role="img" aria-label="Ban chart"></svg><div id="chartTip" class="chart-tip"></div></div>
+  </div>
+  <div id="secSection" style="display:none">
+    <div style="font-weight:800;font-size:1.1rem;margin-top:26px">🛡️ Security</div>
+    <div class="grid" style="margin-top:10px">
+      <div class="card"><div class="label">Incidents (7d)</div><div class="value violet" id="sec7d">&ndash;</div><div class="extra" id="secTotalSub"></div></div>
+      <div class="card"><div class="label">Phishing Removed</div><div class="value red" id="secPhish">&ndash;</div><div class="extra">fake nitro / token links</div></div>
+      <div class="card"><div class="label">Spam Removed</div><div class="value orange" id="secSpam">&ndash;</div><div class="extra">floods &amp; mass mentions</div></div>
+      <div class="card"><div class="label">Anti-Nuke Triggers</div><div class="value violet" id="secNuke">&ndash;</div><div class="extra" id="secRestoreSub"></div></div>
+      <div class="card"><div class="label">Quarantined Bots</div><div class="value blue" id="secQuar">&ndash;</div><div class="extra">held until approved</div></div>
+      <div class="card"><div class="label">Servers Protected</div><div class="value green" id="secProt">&ndash;</div><div class="extra" id="secProtSub"></div></div>
+    </div>
+    <div class="chart-card" style="margin-top:16px">
+      <div class="legend"><span><span class="dot" style="background:#a78bfa;color:#a78bfa"></span><b>Incidents</b> <span style="opacity:.6">bars</span></span><span style="opacity:.6">spam &middot; phishing &middot; anti-nuke &middot; quarantine</span></div>
+      <div style="position:relative"><svg id="secChart" viewBox="0 0 760 260" role="img" aria-label="Security incidents chart"></svg><div id="secTip" class="chart-tip"></div></div>
+    </div>
   </div>
   <div class="chart-card" id="rankCard" style="display:none;margin-top:16px">
     <div style="font-weight:800;font-size:1.1rem;margin-bottom:10px">🏆 Top Protected Servers</div>
@@ -164,6 +179,7 @@ async function load() {
     drawChart(s.daily || []);
     renderLeaderboard(s.leaderboard || []);
     drawGrowth(s.history || []);
+    renderSecurity(s.security || null, s.totalServers);
     var sb = document.getElementById('statusbar');
     sb.innerHTML = '<span class="dot" style="background:#34d399"></span><span>Online &middot; Uptime ' + esc(fmtUptime(s.uptimeSec)) + ' &middot; since ' + esc(new Date(s.startedAt).toLocaleString('en-US')) + '</span>';
     document.getElementById('updated').textContent = 'Updated: ' + new Date(s.updatedAt).toLocaleString('en-US');
@@ -257,11 +273,11 @@ function drawGrowth(history) {
     + '<filter id="glowG"><feGaussianBlur stdDeviation="3" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>'
     + '</defs>';
   var g;
-  for (g = 0; g <= 3; g++) {
-    var y = T + (H - T - B) * g / 3;
+  for (g = 0; g <= 4; g++) {
+    var y = T + (H - T - B) * g / 4;
     h += '<line x1="' + L + '" y1="' + y + '" x2="' + (W - R) + '" y2="' + y + '" stroke="#1e1e2a"/>';
-    h += '<text x="' + (L - 8) + '" y="' + (y + 4) + '" fill="#60a5fa" font-size="11" text-anchor="end" font-family="Space Grotesk,system-ui" opacity="0.8">' + Math.round(niceB * (1 - g / 3)) + '</text>';
-    h += '<text x="' + (W - R + 8) + '" y="' + (y + 4) + '" fill="#f5a623" font-size="11" text-anchor="start" font-family="Space Grotesk,system-ui" opacity="0.8">' + Math.round(niceG * (1 - g / 3)) + '</text>';
+    h += '<text x="' + (L - 8) + '" y="' + (y + 4) + '" fill="#60a5fa" font-size="11" text-anchor="end" font-family="Space Grotesk,system-ui" opacity="0.8">' + Math.round(niceB * (1 - g / 4)) + '</text>';
+    h += '<text x="' + (W - R + 8) + '" y="' + (y + 4) + '" fill="#f5a623" font-size="11" text-anchor="start" font-family="Space Grotesk,system-ui" opacity="0.8">' + Math.round(niceG * (1 - g / 4)) + '</text>';
   }
   var ptsB = [], ptsG = [];
   for (i = 0; i < history.length; i++) {
@@ -274,9 +290,13 @@ function drawGrowth(history) {
   h += '<path d="' + pathB + 'L' + X(history.length - 1).toFixed(1) + ',' + base + 'L' + X(0).toFixed(1) + ',' + base + 'Z" fill="url(#gTotal)"/>';
   h += '<path d="' + pathB + '" fill="none" stroke="#60a5fa" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" filter="url(#glowG)"/>';
   h += '<path d="' + pathG + '" fill="none" stroke="#f5a623" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" filter="url(#glowG)" stroke-dasharray="6,3"/>';
+  var dotStep = Math.max(1, Math.ceil(history.length / 14));
   for (i = 0; i < history.length; i++) {
-    h += '<circle cx="'+X(i).toFixed(1)+'" cy="'+YB(history[i].moderations).toFixed(1)+'" r="3.5" fill="#0a0a0f" stroke="#60a5fa" stroke-width="2"/>';
-    h += '<circle cx="'+X(i).toFixed(1)+'" cy="'+YG(history[i].guilds).toFixed(1)+'" r="3" fill="#0a0a0f" stroke="#f5a623" stroke-width="1.5"/>';
+    var lastPt = i === history.length - 1;
+    if (!lastPt && i % dotStep !== 0) continue;
+    if (lastPt) h += '<circle cx="'+X(i).toFixed(1)+'" cy="'+YB(history[i].moderations).toFixed(1)+'" r="9" fill="#60a5fa" opacity="0.16"><animate attributeName="opacity" values="0.16;0.05;0.16" dur="2.4s" repeatCount="indefinite"/></circle>';
+    h += '<circle cx="'+X(i).toFixed(1)+'" cy="'+YB(history[i].moderations).toFixed(1)+'" r="'+(lastPt?4.5:3)+'" fill="#0a0a0f" stroke="#60a5fa" stroke-width="2"/>';
+    h += '<circle cx="'+X(i).toFixed(1)+'" cy="'+YG(history[i].guilds).toFixed(1)+'" r="'+(lastPt?4:3)+'" fill="#0a0a0f" stroke="#f5a623" stroke-width="1.5"/>';
   }
   var step = Math.max(1, Math.ceil(history.length / 8));
   for (i = 0; i < history.length; i += step) {
@@ -355,6 +375,8 @@ function drawChart(daily) {
         +'</rect>';
       h+='<rect x="'+(x-barW/2+2).toFixed(1)+'" y="'+y1.toFixed(1)+'" width="'+(barW-4).toFixed(1)+'" height="2.5" rx="1.2" fill="#fff" opacity="0.22"><animate attributeName="opacity" from="0" to="0.22" dur="0.3s" begin="'+(parseFloat(stagger)+0.45).toFixed(2)+'s" fill="freeze"/></rect>';
       if(bh>14) h+='<text x="'+x.toFixed(1)+'" y="'+(y1-7).toFixed(1)+'" fill="#34d399" font-size="10" text-anchor="middle" font-weight="800" opacity="0">'+bv+'<animate attributeName="opacity" from="0" to="1" dur="0.25s" begin="'+(parseFloat(stagger)+0.5).toFixed(2)+'s" fill="freeze"/></text>';
+    } else {
+      h+='<rect x="'+(x-barW/2).toFixed(1)+'" y="'+(y0-3.5).toFixed(1)+'" width="'+barW.toFixed(1)+'" height="3.5" rx="1.75" fill="#1b1b26" stroke="#2a2a3a" stroke-dasharray="3,3"/>';
     }
   }
   // line for Triggered Servers — isolate: no 0-baseline at all, single spike = isolated dot (no diagonal)
@@ -383,7 +405,7 @@ function drawChart(daily) {
     h+='<text x="'+X(i).toFixed(1)+'" y="'+(H-10)+'" fill="'+(isLast?'#e8e8ef':'#5a6a7a')+'" font-size="'+(isLast?'11':'10')+'" text-anchor="middle" font-weight="'+(isLast?'700':'400')+'" font-family="Space Grotesk,system-ui">'+lbl+'</text>';
     if(isLast){ h+='<circle cx="'+X(i).toFixed(1)+'" cy="'+(H-22)+'" r="2.2" fill="#f5a623"><animate attributeName="opacity" values="0.3;1;0.3" dur="1.6s" repeatCount="indefinite"/></circle>'; }
   }
-  h+='<text x="'+L+'" y="'+(T-4)+'" fill="#4a5a5a" font-size="9" letter-spacing="0.7" font-family="Space Grotesk,system-ui">LAST 14 DAYS • DAILY</text>';
+  h+='<text x="'+L+'" y="'+(T-4)+'" fill="#4a5a5a" font-size="9" letter-spacing="0.7" font-family="Space Grotesk,system-ui">LAST '+daily.length+' DAYS • DAILY</text>';
   svg.innerHTML=h;
   // tooltip interactivity
   (function(){
@@ -399,6 +421,117 @@ function drawChart(daily) {
       lastIdx=idx;
       var d=daily[idx];
       tip.innerHTML='<div class="k">'+esc(fmtDate(d.date))+'</div><div style="margin-top:3px;display:flex;gap:10px;align-items:center"><span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#34d399;box-shadow:0 0 6px #34d399"></span> <b>'+d.bans+'</b> bans</span><span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#f5a623;box-shadow:0 0 6px #f5a623"></span> <b>'+d.servers+'</b> servers</span></div>';
+      tip.classList.add('on');
+      var px=(xs[idx]-L)/(W-L-R)*r.width;
+      var left=Math.min(r.width-156, Math.max(6, px-78));
+      tip.style.left=left+'px';
+      tip.style.top='48px';
+    }
+    function hide(){ tip.classList.remove('on'); lastIdx=-1; }
+    svg.addEventListener('mousemove', show);
+    svg.addEventListener('mouseleave', hide);
+    svg.addEventListener('touchstart', function(e){ if(e.touches[0]) show(e.touches[0]); }, {passive:true});
+  })();
+}
+
+var SEC_COLORS = { spam: '#f5a623', phishing: '#f87171', anti_nuke: '#a78bfa', quarantine: '#60a5fa' };
+var SEC_NAMES = { spam: 'spam', phishing: 'phishing', anti_nuke: 'anti-nuke', quarantine: 'quarantine' };
+
+function renderSecurity(sec, totalServers) {
+  if (!sec) return;
+  var t = sec.totals || {};
+  var attacks = (t.spam || 0) + (t.phishing || 0) + (t.anti_nuke || 0) + (t.quarantine || 0);
+  if (!attacks && !(sec.protectedServers > 0)) return;
+  document.getElementById('secSection').style.display = 'block';
+  document.getElementById('sec7d').textContent = fmt(sec.last7dIncidents);
+  document.getElementById('secTotalSub').textContent = fmt(attacks) + ' total since launch';
+  document.getElementById('secPhish').textContent = fmt(t.phishing);
+  document.getElementById('secSpam').textContent = fmt(t.spam);
+  document.getElementById('secNuke').textContent = fmt(t.anti_nuke);
+  document.getElementById('secRestoreSub').textContent = fmt(t.restore || 0) + ' restores executed';
+  document.getElementById('secQuar').textContent = fmt(t.quarantine);
+  document.getElementById('secProt').textContent = fmt(sec.protectedServers);
+  document.getElementById('secProtSub').textContent = 'of ' + fmt(totalServers) + ' servers';
+  drawSecChart(sec.dailyStats || []);
+}
+
+function drawSecChart(daily) {
+  var svg = document.getElementById('secChart');
+  var W = 760, H = 260, L = 44, R = 34, T = 18, B = 38;
+  var padded = (function(){
+    var map={}; for(var i=0;i<daily.length;i++) map[daily[i].date]=daily[i];
+    var nonZero=0; for(var i=0;i<daily.length;i++) if(daily[i].incidents>0) nonZero++;
+    var windowSize = nonZero<=2 ? 5 : (nonZero<=5 ? 7 : 14);
+    var last = daily.length ? new Date(daily[daily.length-1].date+'T12:00:00') : new Date();
+    var out=[]; for(var k=windowSize-1;k>=0;k--){ var d=new Date(last); d.setDate(last.getDate()-k); var iso=d.toISOString().slice(0,10); out.push(map[iso]||{date:iso,incidents:0,byType:{}}); }
+    return out;
+  })();
+  svg.setAttribute('viewBox','0 0 '+W+' '+H);
+  if (padded.every(function(d){ return d.incidents===0; })) {
+    svg.innerHTML = '<defs><linearGradient id="secEmpty" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#a78bfa" stop-opacity="0.12"/><stop offset="100%" stop-color="#a78bfa" stop-opacity="0"/></linearGradient></defs>'
+      + '<rect x="'+L+'" y="80" width="'+(W-L-R)+'" height="110" rx="10" fill="url(#secEmpty)" stroke="#26223a"/>'
+      + '<text x="'+(W/2)+'" y="128" fill="#71718a" font-size="13" text-anchor="middle" font-family="Space Grotesk,system-ui">No incidents in the last '+padded.length+' days</text>'
+      + '<text x="'+(W/2)+'" y="148" fill="#555" font-size="11" text-anchor="middle" font-family="Space Grotesk,system-ui">spam, phishing &amp; anti-nuke protection is standing by</text>';
+    return;
+  }
+  daily = padded;
+  var maxV = 0, i;
+  for (i = 0; i < daily.length; i++) if (daily[i].incidents > maxV) maxV = daily[i].incidents;
+  var nice = (function(v){ if(v<=4) return 4; var n=Math.ceil(v/4)*4; if(n>1000){ var pow=Math.pow(10, Math.floor(Math.log10(n))-1); var step=pow; if(n/pow <2) step=pow; else if(n/pow<5) step=pow*2; else step=pow*5; n=Math.ceil(v/step)*step; n=Math.ceil(n/4)*4; } return n; })(Math.max(maxV,1));
+  function X(idx){ return L + (W-L-R) * idx / (daily.length-1); }
+  function Y(v){ return T + (H-T-B)*(1 - v/nice); }
+  var barW = Math.max(10, Math.min(26, (W-L-R)/daily.length*0.62));
+  var h = '<defs>'
+    + '<linearGradient id="secBarGrad" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#c4b5fd" stop-opacity="0.98"/><stop offset="100%" stop-color="#7c3aed" stop-opacity="0.4"/></linearGradient>'
+    + '<filter id="secGlow"><feGaussianBlur stdDeviation="4" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter>'
+    + '</defs>';
+  for(var g=0;g<=4;g++){
+    var y=T+(H-T-B)*g/4, v=Math.round(nice*(1-g/4));
+    h+='<line x1="'+L+'" y1="'+y+'" x2="'+(W-R)+'" y2="'+y+'" stroke="'+(g===4?'#2a2a38':'#1a1a24')+'" stroke-width="1" stroke-dasharray="'+(g===4?'0':'4,6')+'"/>';
+    h+='<text x="'+(L-7)+'" y="'+(y+4)+'" fill="#5a6a6a" font-size="11" text-anchor="end" font-family="Space Grotesk,system-ui">'+v+'</text>';
+  }
+  for(i=0;i<daily.length;i++){
+    var iv=daily[i].incidents, x=X(i), y1=Y(iv), y0=Y(0), bh=y0-y1;
+    if(iv>0){
+      var stagger=(i*0.035).toFixed(2);
+      h+='<rect class="bar-rect" x="'+(x-barW/2).toFixed(1)+'" y="'+y0.toFixed(1)+'" width="'+barW.toFixed(1)+'" height="0" rx="5" fill="url(#secBarGrad)" stroke="#a78bfa" stroke-opacity="0.4">'
+        +'<animate attributeName="y" from="'+y0.toFixed(1)+'" to="'+y1.toFixed(1)+'" dur="0.55s" begin="'+stagger+'s" fill="freeze" calcMode="spline" keySplines="0.22 1 0.36 1"/>'
+        +'<animate attributeName="height" from="0" to="'+Math.max(bh,2).toFixed(1)+'" dur="0.55s" begin="'+stagger+'s" fill="freeze" calcMode="spline" keySplines="0.22 1 0.36 1"/>'
+        +'</rect>';
+      h+='<rect x="'+(x-barW/2+2).toFixed(1)+'" y="'+y1.toFixed(1)+'" width="'+(barW-4).toFixed(1)+'" height="2.5" rx="1.2" fill="#fff" opacity="0.22"><animate attributeName="opacity" from="0" to="0.22" dur="0.3s" begin="'+(parseFloat(stagger)+0.45).toFixed(2)+'s" fill="freeze"/></rect>';
+      if(bh>14) h+='<text x="'+x.toFixed(1)+'" y="'+(y1-7).toFixed(1)+'" fill="#c4b5fd" font-size="10" text-anchor="middle" font-weight="800" opacity="0">'+iv+'<animate attributeName="opacity" from="0" to="1" dur="0.25s" begin="'+(parseFloat(stagger)+0.5).toFixed(2)+'s" fill="freeze"/></text>';
+    } else {
+      h+='<rect x="'+(x-barW/2).toFixed(1)+'" y="'+(y0-3.5).toFixed(1)+'" width="'+barW.toFixed(1)+'" height="3.5" rx="1.75" fill="#1b1b26" stroke="#2a2a3a" stroke-dasharray="3,3"/>';
+    }
+  }
+  for(i=0;i<daily.length;i++){ h+='<rect x="'+(X(i)-barW/2-6).toFixed(1)+'" y="'+T+'" width="'+(barW+12).toFixed(1)+'" height="'+(H-T-B)+'" fill="transparent" data-idx="'+i+'" style="cursor:crosshair"/>'; }
+  var everyDaySec = daily.length<=7;
+  for(i=0;i<daily.length;i++){
+    var show = everyDaySec || (i%2===1) || i===daily.length-1;
+    if(!show) continue;
+    var lbl=esc(fmtDate(daily[i].date));
+    var isLast = i===daily.length-1;
+    h+='<text x="'+X(i).toFixed(1)+'" y="'+(H-10)+'" fill="'+(isLast?'#e8e8ef':'#5a6a7a')+'" font-size="'+(isLast?'11':'10')+'" text-anchor="middle" font-weight="'+(isLast?'700':'400')+'" font-family="Space Grotesk,system-ui">'+lbl+'</text>';
+    if(isLast){ h+='<circle cx="'+X(i).toFixed(1)+'" cy="'+(H-22)+'" r="2.2" fill="#a78bfa"><animate attributeName="opacity" values="0.3;1;0.3" dur="1.6s" repeatCount="indefinite"/></circle>'; }
+  }
+  h+='<text x="'+L+'" y="'+(T-4)+'" fill="#4a5a5a" font-size="9" letter-spacing="0.7" font-family="Space Grotesk,system-ui">LAST '+daily.length+' DAYS \u2022 DAILY</text>';
+  svg.innerHTML=h;
+  (function(){
+    var tip=document.getElementById('secTip'); if(!tip) return;
+    var xs=[]; for(var k=0;k<daily.length;k++) xs.push(X(k));
+    var lastIdx=-1;
+    function nearest(vbX){ var best=0, bd=1e9; for(var k=0;k<xs.length;k++){ var d=Math.abs(xs[k]-vbX); if(d<bd){bd=d; best=k;}} return best; }
+    function show(e){
+      var r=svg.getBoundingClientRect();
+      var vbX = L + ((e.clientX - r.left)/r.width)*(W);
+      var idx=nearest(vbX);
+      if(idx===lastIdx && tip.classList.contains('on')) return;
+      lastIdx=idx;
+      var d=daily[idx], bt=d.byType||{};
+      var rows='';
+      var keys=['spam','phishing','anti_nuke','quarantine'];
+      for(var k2=0;k2<keys.length;k2++){ var kk=keys[k2]; if(bt[kk]) rows+='<span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:'+SEC_COLORS[kk]+';box-shadow:0 0 6px '+SEC_COLORS[kk]+'"></span> <b>'+bt[kk]+'</b> '+SEC_NAMES[kk]+'</span>'; }
+      tip.innerHTML='<div class="k">'+esc(fmtDate(d.date))+'</div><div style="margin-top:3px;display:flex;gap:10px;align-items:center;flex-wrap:wrap"><span><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#a78bfa;box-shadow:0 0 6px #a78bfa"></span> <b>'+d.incidents+'</b> incidents</span>'+rows+'</div>';
       tip.classList.add('on');
       var px=(xs[idx]-L)/(W-L-R)*r.width;
       var left=Math.min(r.width-156, Math.max(6, px-78));

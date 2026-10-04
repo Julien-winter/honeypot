@@ -8,7 +8,8 @@ import type { SecurityConfig } from "../utils/db";
 import { getSecurityConfigCached, type DbModule } from "./config";
 import { recordSecurityEvent, sendSecurityLog } from "./notify";
 import { fetchAuditLogEntries } from "./audit-log";
-import { createBackup, restoreBackup, restoreSummary } from "./backup";
+import { restoreSummary } from "./backup";
+import { runRestore } from "./restore-run";
 
 type StructureKind = "channel" | "role";
 
@@ -146,18 +147,25 @@ async function respondToNuke(
         }
     }
 
-    // ---- restore the structure ----
-    let restored = null as Awaited<ReturnType<typeof restoreBackup>> | null;
+    // ---- restore the structure (live progress message + verify passes + fresh snapshot) ----
+    let outcome = null as Awaited<ReturnType<typeof runRestore>> | null;
     let backupId = 0;
     try {
-        const backup = await db.getLatestSecurityBackup(guildId);
-        if (backup) {
-            backupId = backup.id;
-            restored = await restoreBackup(api, backup, `Anti-nuke restore (backup #${backup.id})`);
-        }
+        const latest = await db.getLatestSecurityBackup(guildId).catch(() => null);
+        backupId = latest?.id ?? 0;
+        outcome = await runRestore(api, db, redis, guildId, {
+            reason: `Anti-nuke restore (backup #${backupId || "?"})`,
+            channelId: cfg.event_log_channel_id ?? null,
+            requestedBy: executor?.id ?? null,
+            approvedBy: executor?.id ?? null,
+            backupAfter: true,
+        });
+        if (outcome && !outcome.ok && outcome.error?.startsWith("No snapshot")) outcome = null;
     } catch (err) {
         console.error(`Anti-nuke restore failed in ${guildId}: ${err}`);
     }
+    const restored = outcome?.ok ? outcome.result : null;
+    if (outcome && outcome.backupId) backupId = outcome.backupId;
 
     // ---- report ----
     const didWork = neutralized || (restored && (restored.channelsCreated.length > 0 || restored.rolesCreated.length > 0));
@@ -172,8 +180,10 @@ async function respondToNuke(
                 ? `**Action:** ${neutralizeError}`
                 : `**Action:** ${cfg.anti_nuke_action === "alert" ? "alert only (anti-nuke response is set to *alert*)" : "no action taken"}`,
         restored
-            ? `**Restore:** ${restored.channelsCreated.length} channel(s), ${restored.rolesCreated.length} role(s) recreated from backup #${backupId}\n${restoreSummary(restored)}`
-            : "**Restore:** no automatic snapshot yet (the first one is taken within ~10 minutes of enabling Anti-Nuke)",
+            ? `**Restore:** ${restored.channelsCreated.length} channel(s), ${restored.rolesCreated.length} role(s) recreated from backup #${backupId} — ${restored.membersFixed} member role fix(es), ${restored.messagesRestored} message(s) re-posted\n${restoreSummary(restored)}`
+            : outcome && outcome.error
+                ? `**Restore failed:** ${outcome.error}`
+                : "**Restore:** no automatic snapshot yet (the first one is taken within ~10 minutes of enabling Anti-Nuke)",
     ];
 
     const embed: APIEmbed = {
@@ -207,16 +217,12 @@ async function respondToNuke(
         neutralized,
         restored_channels: restored?.channelsCreated.length ?? 0,
         restored_roles: restored?.rolesCreated.length ?? 0,
+        restored_members: restored?.membersFixed ?? 0,
+        restored_messages: restored?.messagesRestored ?? 0,
     });
-    if (restored && (restored.channelsCreated.length > 0 || restored.rolesCreated.length > 0)) {
-        await recordSecurityEvent(db, redis, guildId, "restore", executor?.id ?? null, null, { backup_id: backupId });
-    }
+    // (the "restore" incident + post-restore snapshot are recorded by runRestore itself)
 
     console.log(styleText("red", `[anti-nuke] ${guildId}: ${kind} nuke${didWork ? " stopped" : " detected"} (executor: ${executor?.id ?? "unknown"})`));
 
-    // keep a fresh backup of the restored state (and unlock for the next incident)
-    if (restored && (cfg.backups || cfg.anti_nuke)) {
-        await createBackup(api, db, guildId, "post anti-nuke restore").catch(() => null);
-    }
     releaseLock(guildId, redis);
 }
