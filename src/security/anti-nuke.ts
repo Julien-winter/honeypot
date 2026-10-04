@@ -10,11 +10,13 @@ import { recordSecurityEvent, sendSecurityLog } from "./notify";
 import { fetchAuditLogEntries } from "./audit-log";
 import { restoreSummary } from "./backup";
 import { runRestore } from "./restore-run";
+import { clearPendingRestore } from "./interactions";
 
 type StructureKind = "channel" | "role";
 
 const TRIGGER: Record<StructureKind, { threshold: number; windowMs: number }> = {
-    channel: { threshold: 3, windowMs: 60_000 },
+    // channels: intervene from the SECOND deletion - no approval round-trip in between
+    channel: { threshold: 2, windowMs: 60_000 },
     role: { threshold: 5, windowMs: 60_000 },
 };
 
@@ -91,6 +93,9 @@ async function respondToNuke(
     cfg: SecurityConfig,
 ) {
     const auditAction = kind === "channel" ? AuditLogEvent.ChannelDelete : AuditLogEvent.RoleDelete;
+
+    // a manual approval request may still be open - the automatic response supersedes it
+    clearPendingRestore(guildId);
 
     // ---- who did it? ----
     let executor: { id: string; bot: boolean; tag: string } | null = null;

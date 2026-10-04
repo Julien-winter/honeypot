@@ -40,6 +40,11 @@ import {
 /** One pending manual restore request per guild (no repeated pings). */
 const pendingRestores = new Map<string, { requester: string; expires: number }>();
 
+/** Drop a pending manual request - used when the anti-nuke takes over on its own. */
+export function clearPendingRestore(guildId: string): boolean {
+    return pendingRestores.delete(guildId);
+}
+
 const RESTORE_REQUEST_TTL = 5 * 60_000;
 
 /** Run a restore that has been approved (by an approver directly, or via the button flow). */
