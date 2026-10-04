@@ -192,7 +192,7 @@ async function respondToNuke(
                         `**Snapshot:** #${latestBackup?.id ?? "?"} - nothing has been changed yet.`,
                         "",
                         `**Approve** = strip the executor and restore from the snapshot.`,
-                        `**Dismiss** = treat it as intentional and do nothing.`,
+                        `**Dismiss** = restore the structure, but do NOT punish the executor.`,
                         `If structure keeps disappearing, I will intervene **immediately** without waiting for approval.`,
                     ].join("\n"),
                     timestamp: new Date().toISOString(),
@@ -381,16 +381,50 @@ export async function handleNukeApproval(
     await retireRequestMessage(api, pending);
 
     if (!approve) {
-        // deliberate deletion confirmed - reset the window so we start fresh
+        // false alarm: nobody gets punished, but the deleted structure still comes back
         deleteWindows.delete(guildId);
+        if (!(await acquireLock(guildId, redis))) return "A response is already running - try again in a moment.";
         try {
-            await api.channels.createMessage(pending.channel_id, {
-                content: `❎ Nuke response dismissed by <@${userId}> - the deletions are treated as intentional.`,
-                allowed_mentions: { users: [userId] },
+            const cfg = await getSecurityConfigCached(db, guildId);
+            if (!cfg?.anti_nuke) return "Anti-Nuke has been switched off in the meantime.";
+
+            const backup = await db.getLatestSecurityBackup(guildId).catch(() => null);
+            if (!backup) {
+                await recordSecurityEvent(db, redis, guildId, "anti_nuke", userId, null, { stage: "dismissed", kind: pending.kind });
+                return "✅ Dismissed - the executor is not punished. No snapshot exists yet, so nothing can be restored.";
+            }
+
+            const outcome = await runRestore(api, db, redis, guildId, {
+                reason: `Restore after dismissed nuke request (backup #${backup.id})`,
+                channelId: cfg.event_log_channel_id ?? null,
+                requestedBy: pending.executor?.id ?? null,
+                approvedBy: userId,
+                backupAfter: true,
             });
-        } catch { /* best effort */ }
-        await recordSecurityEvent(db, redis, guildId, "anti_nuke", userId, null, { stage: "dismissed", kind: pending.kind });
-        return "✅ Dismissed - no response will run for these deletions.";
+
+            const embed: APIEmbed = {
+                title: "♻️ Structure restored (dismissed request)",
+                color: 0x57f287,
+                description: [
+                    `**Dismissed by:** <@${userId}> - the deletions are treated as intentional, the executor is **not** punished.`,
+                    `**Executor:** ${pending.executor ? `<@${pending.executor.id}> (\`${pending.executor.tag}\`)` : "unknown"}`,
+                    outcome.ok && outcome.result
+                        ? `**Snapshot:** #${outcome.backupId}\n${restoreSummary(outcome.result)}`
+                        : `**Restore failed:** ${outcome.error ?? "unknown error"}`,
+                ].join("\n"),
+                timestamp: new Date().toISOString(),
+                footer: { text: "Honeypot anti-nuke" },
+            };
+            const logged = await sendSecurityLog(api, db, guildId, cfg, embed);
+            if (!logged) console.log(`[anti-nuke] ${guildId}: dismissed -> ${outcome.ok ? "restored" : "restore failed"}`);
+
+            await recordSecurityEvent(db, redis, guildId, "anti_nuke", userId, null, { stage: "dismissed", kind: pending.kind });
+            return outcome.ok
+                ? "✅ Dismissed - the executor stays untouched, restoring the structure now (progress in the event log)."
+                : `✅ Dismissed - but the restore failed: ${(outcome.error ?? "unknown error").slice(0, 150)}`;
+        } finally {
+            releaseLock(guildId, redis);
+        }
     }
 
     if (!(await acquireLock(guildId, redis))) return "A response is already running.";
