@@ -42,3 +42,8 @@ export class TokenBucket {
 // Shared bucket for moderation write calls (ban/unban/timeout).
 // Burst of 5 for isolated incidents, then ~1 action/sec sustained in raids.
 export const moderationBucket = new TokenBucket(5, 1);
+
+// Restore re-posts (webhook messages): burst of 5, then ~2 per second. Smooths the
+// message phase so it does not slam into the per-webhook / per-channel rate limits
+// (Discord's own 429 queueing in @discordjs/rest stays the backstop).
+export const restoreMessageBucket = new TokenBucket(5, 2);

@@ -15,6 +15,7 @@ import type { API as API2 } from "@discordjs/core/http-only";
 import type { SecurityBackupRow } from "../utils/db";
 import type { DbModule } from "./config";
 import { getBuffered, type BufferedMessage } from "./message-buffer";
+import { restoreMessageBucket } from "../utils/rate-limit";
 
 export type BackupChannel = {
     id: string;
@@ -728,15 +729,32 @@ async function repostMessages(api: API | API2, channelId: string, msgs: BackupMe
     }
     const token: string = webhook.token;
     let sent = 0;
+    let misses = 0; // consecutive failures (a dead webhook fails everything, a blip fails once)
     try {
-        for (const m of msgs) {
+        outer: for (const m of msgs) {
             for (const chunk of splitContent(m.c)) {
-                await api.webhooks.execute(webhook.id, token, {
-                    content: chunk,
-                    username: m.a.slice(0, 80),
-                    ...(m.av ? { avatar_url: m.av } : {}),
-                });
-                sent++;
+                await restoreMessageBucket.take();
+                for (let attempt = 0; attempt < 2; attempt++) {
+                    try {
+                        await api.webhooks.execute(webhook.id, token, {
+                            content: chunk,
+                            username: m.a.slice(0, 80),
+                            ...(m.av ? { avatar_url: m.av } : {}),
+                        });
+                        sent++;
+                        misses = 0;
+                        break;
+                    } catch (err) {
+                        if (attempt === 0) {
+                            // rate limit / network blip: small cooldown, then one retry
+                            await Bun.sleep(1500);
+                            continue;
+                        }
+                        misses++;
+                        console.log("[restore] " + channelId + ": message failed (" + misses + " in a row): " + errMsg(err));
+                        if (misses >= 3) break outer;
+                    }
+                }
             }
         }
     } finally {
