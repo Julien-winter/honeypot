@@ -14,6 +14,7 @@ import type { API } from "@discordjs/core";
 import type { API as API2 } from "@discordjs/core/http-only";
 import type { SecurityBackupRow } from "../utils/db";
 import type { DbModule } from "./config";
+import { getBuffered, type BufferedMessage } from "./message-buffer";
 
 export type BackupChannel = {
     id: string;
@@ -42,6 +43,7 @@ export type BackupRole = {
 
 /** A single captured message - re-posted verbatim (author name + pfp) through a webhook on restore. */
 export type BackupMessage = {
+    id?: string; // message id (new snapshots only) - used to merge/dedupe against the live buffer
     c: string; // content
     a: string; // author display name
     av: string | null; // author avatar url (or default avatar)
@@ -130,7 +132,7 @@ function defaultAvatar(userId: string): string {
     }
 }
 
-function authorAvatar(author: APIMessage["author"]): string {
+export function authorAvatar(author: APIMessage["author"]): string {
     if (author.avatar) return `https://cdn.discordapp.com/avatars/${author.id}/${author.avatar}.png?size=64`;
     return defaultAvatar(author.id);
 }
@@ -140,7 +142,7 @@ function authorAvatar(author: APIMessage["author"]): string {
  * URLs when `content` is empty (messages from bots without the message-content intent
  * arrive with empty content but their embeds/attachments intact).
  */
-function messageText(m: APIMessage): string | null {
+export function messageText(m: APIMessage): string | null {
     if (m.content) return m.content;
     const parts: string[] = [];
     for (const e of m.embeds ?? []) {
@@ -155,6 +157,46 @@ function messageText(m: APIMessage): string | null {
 function errMsg(err: unknown): string {
     const s = err instanceof Error ? err.message : String(err);
     return s.length > 180 ? s.slice(0, 177) + "..." : s;
+}
+
+/** Decimal snowflake compare (ids differ in length before they differ in value). */
+function compareSnowflake(a: string, b: string): number {
+    if (a.length !== b.length) return a.length - b.length;
+    return a < b ? -1 : a > b ? 1 : 0;
+}
+
+function messageKey(a: string, c: string): string {
+    return a + "\x1F" + c;
+}
+
+/**
+ * Merge a stored snapshot with the live message buffer (everything typed after the
+ * last snapshot). Ids dedupe when both sides carry them; legacy snapshots (no ids)
+ * fall back to author+content so old rows keep working.
+ */
+function mergeSnapshotAndBuffer(snapshot: BackupMessage[], buffered: BufferedMessage[]): BackupMessage[] {
+    if (buffered.length === 0) return snapshot;
+    if (snapshot.length === 0) return [...buffered].sort((x, y) => compareSnowflake(x.id!, y.id!));
+    const snapIds = new Set(snapshot.filter(m => m.id).map(m => m.id!));
+    const legacyKeys = new Set(snapshot.filter(m => !m.id).map(m => messageKey(m.a, m.c)));
+    const extras = buffered.filter(m => !snapIds.has(m.id) && !legacyKeys.has(messageKey(m.a, m.c)));
+    const all = [...snapshot, ...extras];
+    if (all.every(m => m.id)) all.sort((x, y) => compareSnowflake(x.id!, y.id!));
+    return all;
+}
+
+/** Drop messages the target channel already contains (by id, or by rendered text+author). */
+function filterExistingMessages(msgs: BackupMessage[], live: APIMessage[]): BackupMessage[] {
+    const liveIds = new Set(live.map(m => m.id));
+    const liveKeys = new Set<string>();
+    for (const m of live) {
+        const text = messageText(m);
+        if (!text) continue;
+        const globalName = (m.author as { global_name?: string | null }).global_name ?? null;
+        liveKeys.add(messageKey(m.author.username ?? "", text));
+        if (globalName) liveKeys.add(messageKey(globalName, text));
+    }
+    return msgs.filter(m => !(m.id && liveIds.has(m.id)) && !liveKeys.has(messageKey(m.a, m.c)));
 }
 
 async function pool<T>(items: T[], limit: number, fn: (item: T) => Promise<void>): Promise<void> {
@@ -279,9 +321,17 @@ export async function createBackup(
                         if (!text) { emptyMessages++; continue; }
                         const globalName = (m.author as { global_name?: string | null }).global_name ?? null;
                         const author = (globalName ?? m.author.username ?? "Unknown").slice(0, 80);
-                        list.push({ c: text, a: author, av: authorAvatar(m.author) });
+                        list.push({ id: m.id, c: text, a: author, av: authorAvatar(m.author) });
                     }
-                    if (list.length) messages[ch.id] = list;
+                    // merge the live buffer so messages typed after the last snapshot are kept too
+                    const buffered = getBuffered(ch.id);
+                    let final = list;
+                    if (buffered.length > 0) {
+                        const seen = new Set(list.map(x => x.id));
+                        const extras = buffered.filter(x => !seen.has(x.id));
+                        final = [...list, ...extras].sort((x, y) => compareSnowflake(x.id!, y.id!));
+                    }
+                    if (final.length) messages[ch.id] = final;
                 } catch (err) {
                     // channel was deleted while capturing -> the snapshot would keep the
                     // channel but lose its messages: never store that (only one is kept)
@@ -628,24 +678,33 @@ export async function restoreBackup(
         }
     }
 
-    // ---- message history for channels that were recreated in this run ----
-    const messageTargets = Object.keys(data.messages).filter(id => createdChannelIds.has(id));
+    // ---- message history (recreated channels + channels matched by name) ----
+    const messageTargets = Object.keys(data.messages)
+        .filter(id => channelIdMap.has(id) && (data.messages[id]?.length ?? 0) > 0);
     if (messageTargets.length > 0) {
         emit("messages", 0, messageTargets.length);
         let msgDone = 0;
         for (const oldChannelId of messageTargets) {
-            const liveChannelId = channelIdMap.get(oldChannelId);
-            const msgs = data.messages[oldChannelId] ?? [];
-            if (liveChannelId && msgs.length > 0) {
-                try {
+            const liveChannelId = channelIdMap.get(oldChannelId)!;
+            const wasCreated = createdChannelIds.has(oldChannelId);
+            try {
+                // snapshot history plus everything typed after the last snapshot
+                let msgs = mergeSnapshotAndBuffer(data.messages[oldChannelId] ?? [], getBuffered(oldChannelId));
+                // a channel that already existed (matched by name) may still hold part of the
+                // history: only post what is missing so nothing gets duplicated
+                if (msgs.length > 0 && !wasCreated) {
+                    const live = await api.channels.getMessages(liveChannelId, { limit: 100 }).catch(() => null);
+                    if (live) msgs = filterExistingMessages(msgs, live);
+                }
+                if (msgs.length > 0) {
                     const sent = await repostMessages(api, liveChannelId, msgs, reason);
                     if (sent > 0) {
                         result.messagesRestored += sent;
                         result.messageChannels++;
                     }
-                } catch (err) {
-                    addErr(`messages: ${errMsg(err)}`);
                 }
+            } catch (err) {
+                addErr(`messages: ${errMsg(err)}`);
             }
             msgDone++;
             emit("messages", msgDone, messageTargets.length);

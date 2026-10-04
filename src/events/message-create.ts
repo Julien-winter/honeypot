@@ -14,12 +14,19 @@ import { maybeFilterLink } from "../utils/link-filter";
 import type { HoneypotConfig, HoneypotChannel } from "../utils/db";
 import { handleSecurityMessage } from "../security/message-guard";
 import { getSecurityConfigCached, messageModulesEnabled } from "../security/config";
+import { messageText, authorAvatar } from "../security/backup";
+import { noteMessage } from "../security/message-buffer";
+import type { APIMessage } from "discord-api-types/v10";
 
 
 const handler: EventHandler<GatewayDispatchEvents.MessageCreate> = {
     event: GatewayDispatchEvents.MessageCreate,
     handler: async ({ data: message, api, applicationId, redis, db }) => {
         if (!message.guild_id) return;
+
+        // keep recent messages around so a restore right after a deletion can re-post them too
+        bufferForRestore(message, db)
+            .catch(err => console.error("Error buffering message for restore: " + err));
 
         // security modules (anti-spam / anti-phishing) watch every channel, not just the honeypot
         handleSecurityMessage(message, api, applicationId, redis, db)
@@ -286,6 +293,21 @@ const ignoredMessageTypes = new Set([
     MessageType.AutoModerationAction,
 ]);
 
+
+/** Buffer recent messages for the restore system (fire-and-forget, gated on the security config). */
+async function bufferForRestore(message: APIMessage & { guild_id?: string }, db: typeof import("../utils/db")): Promise<void> {
+    const cfg = await getSecurityConfigCached(db, message.guild_id!);
+    if (!cfg || (!cfg.anti_nuke && !cfg.backups)) return;
+    const text = messageText(message);
+    if (!text) return;
+    const globalName = (message.author as { global_name?: string | null }).global_name ?? null;
+    noteMessage(message.channel_id, {
+        id: message.id,
+        c: text,
+        a: (globalName ?? message.author.username ?? "Unknown").slice(0, 80),
+        av: authorAvatar(message.author),
+    });
+}
 
 export default handler;
 

@@ -1,11 +1,13 @@
 import { GatewayDispatchEvents } from "discord-api-types/v10";
 import type { EventHandler } from "./events";
 import { setSubscribedChannelCache } from "../utils/cache";
+import { dropMessage } from "../security/message-buffer";
 
 const handler: EventHandler<GatewayDispatchEvents.MessageDelete> = {
     event: GatewayDispatchEvents.MessageDelete,
     handler: async ({ data: message, api, applicationId, redis, db }) => {
         if (!message.guild_id) return;
+        dropMessage(message.channel_id, message.id);
         try {
             await db.unsetHoneypotMsg(message.guild_id, message.id);
 
