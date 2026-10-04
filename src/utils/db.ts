@@ -643,7 +643,7 @@ export async function addSecurityBackup(
   data: string,
   meta: { channels: number; roles: number },
   reason: string | null,
-  keep: number = 6,
+  keep: number = 4,
 ): Promise<number> {
   const createdAt = Math.floor(Date.now() / 1000);
   await db`

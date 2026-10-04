@@ -173,7 +173,7 @@ async function respondToNuke(
                 : `**Action:** ${cfg.anti_nuke_action === "alert" ? "alert only (anti-nuke response is set to *alert*)" : "no action taken"}`,
         restored
             ? `**Restore:** ${restored.channelsCreated.length} channel(s), ${restored.rolesCreated.length} role(s) recreated from backup #${backupId}\n${restoreSummary(restored)}`
-            : "**Restore:** no backup available - run `/backup create` to enable restores",
+            : "**Restore:** no automatic snapshot yet (the first one is taken within ~10 minutes of enabling Anti-Nuke)",
     ];
 
     const embed: APIEmbed = {
@@ -215,7 +215,7 @@ async function respondToNuke(
     console.log(styleText("red", `[anti-nuke] ${guildId}: ${kind} nuke${didWork ? " stopped" : " detected"} (executor: ${executor?.id ?? "unknown"})`));
 
     // keep a fresh backup of the restored state (and unlock for the next incident)
-    if (restored && cfg.backups) {
+    if (restored && (cfg.backups || cfg.anti_nuke)) {
         await createBackup(api, db, guildId, "post anti-nuke restore").catch(() => null);
     }
     releaseLock(guildId, redis);

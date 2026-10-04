@@ -54,12 +54,11 @@ Options you can enable to avoid the bots better [**ⓘ**](https://honeypot.risky
 
 Configure everything with `/security` - optional protections beyond the honeypot channel [**ⓘ**](https://honeypot.riskymh.dev/docs)
 
-1. 🛡️ **Anti-Nuke & Restore:** Detects mass channel/role deletions, strips the attacker's roles, and rebuilds the structure from the latest backup.
+1. 🛡️ **Anti-Nuke & Restore:** Detects mass channel/role deletions, strips the attacker's roles, and rebuilds the structure from the latest automatic snapshot (taken every 10 minutes, only when something changed - the last 4 are kept).
 2. 🔒 **Bot Quarantine:** Newly added bots join without permissions until an admin approves or kicks them (avoids raid bots getting a head start).
 3. 🚫 **Anti-Spam:** Removes flood messages, mass mentions and coordinated raids in every channel.
 4. 🔗 **Anti-Phishing:** Deletes fake nitro / token stealer links (needs the [Message Content Intent](https://discord.com/developers/docs/topics/gateway#message-content-intent) + `HAS_MESSAGE_INTENT=1`).
 5. 📜 **Event Log:** Logs every change (channels, roles, bans, invites, ...) to a channel of your choice - powered by the audit log.
-6. 💾 **Auto-Backups:** Snapshots channels & roles every 10 minutes so `/backup restore` (or Anti-Nuke) can bring them back.
 
 > The critical modules (Anti-Nuke, Quarantine, Anti-Spam) can only be turned off by the server owner or an administrator.
 

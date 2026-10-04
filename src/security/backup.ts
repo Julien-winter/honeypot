@@ -94,7 +94,7 @@ export function serializeRoles(roles: APIRole[]): BackupRole[] {
     }));
 }
 
-/** Fetch the current structure and store it as a backup. Returns the new backup id (0 when nothing was stored). */
+/** Fetch the current structure and store it as a backup. Returns null when nothing changed (or on failure). */
 export async function createBackup(
     api: API | API2,
     db: DbModule,
@@ -116,6 +116,9 @@ export async function createBackup(
             console.error(`Backup for ${guildId} too large (${json.length} chars), skipping`);
             return null;
         }
+        // nothing changed since the newest snapshot - do not waste storage on a duplicate
+        const latest = await db.getLatestSecurityBackup(guildId).catch(() => null);
+        if (latest && latest.data === json) return null;
         const id = await db.addSecurityBackup(guildId, json, { channels: data.channels.length, roles: data.roles.length }, reason);
         return { id, channels: data.channels.length, roles: data.roles.length };
     } catch (err) {

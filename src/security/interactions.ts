@@ -1,13 +1,10 @@
 import {
-    ApplicationCommandOptionType,
-    ButtonStyle,
     ChannelType,
     ComponentType,
     InteractionType,
     MessageFlags,
     PermissionFlagsBits,
     SelectMenuDefaultValueType,
-    type APIEmbed,
     type APIInteraction,
     type APIModalInteractionResponseCallbackData,
     type APISelectMenuOption,
@@ -28,16 +25,16 @@ import {
     type DbModule,
 } from "./config";
 import { approveQuarantine, kickQuarantine } from "./quarantine";
-import { createBackup, restoreBackup, restoreSummary } from "./backup";
-import { recordSecurityEvent, sendSecurityLog } from "./notify";
+import { createBackup } from "./backup";
+import { sendSecurityLog } from "./notify";
 
-const MODULE_LABELS: Record<SecurityModule, { label: string; emoji: string; description: string }> = {
-    anti_nuke: { label: "Anti-Nuke & Restore", emoji: "🛡️", description: "Catches mass channel/role deletions, strips the attacker, rebuilds from backup" },
+type ShownModule = Exclude<SecurityModule, "backups">;
+const MODULE_LABELS: Record<ShownModule, { label: string; emoji: string; description: string }> = {
+    anti_nuke: { label: "Anti-Nuke & Restore", emoji: "🛡️", description: "Mass channel/role deletions: strips the attacker, auto-rebuilds from snapshots" },
     quarantine: { label: "Bot Quarantine", emoji: "🔒", description: "New bots join without permissions until approved" },
     anti_spam: { label: "Anti-Spam", emoji: "🚫", description: "Floods, mass mentions and coordinated raids" },
     anti_phishing: { label: "Anti-Phishing", emoji: "🔗", description: "Removes fake nitro / token stealer links" },
     event_log: { label: "Event Log", emoji: "📜", description: "Logs every change (channels, roles, bans, invites…)" },
-    backups: { label: "Auto-Backups", emoji: "💾", description: "Snapshots channels & roles every 10 minutes" },
 };
 
 const SPAM_LEVELS = {
@@ -79,10 +76,6 @@ function replyEphemeral(api: API | API2, interaction: APIInteraction, body: REST
     });
 }
 
-function hasAppPerms(interaction: APIInteraction, bits: bigint): boolean {
-    return hasPermission(BigInt(interaction.app_permissions ?? "0"), bits);
-}
-
 function memberHas(interaction: APIInteraction, bits: bigint): boolean {
     if (!interaction.member) return true; // e.g. dm-installed context shouldn't happen here
     return hasPermission(BigInt(interaction.member.permissions ?? "0"), bits);
@@ -90,7 +83,7 @@ function memberHas(interaction: APIInteraction, bits: bigint): boolean {
 
 /**
  * Handles everything the security modules add to InteractionCreate:
- * /security, /backup (create|list|restore), quarantine buttons and backup restore buttons.
+ * /security (modal) and the quarantine approval buttons.
  * Returns true when the interaction was consumed.
  */
 export async function handleSecurityInteraction(
@@ -109,7 +102,7 @@ export async function handleSecurityInteraction(
         // ------------------------- /security -------------------------
         if (interaction.type === InteractionType.ApplicationCommand && interaction.data.name === "security") {
             const current = (await db.getSecurityConfig(guildId)) ?? defaultConfig(guildId);
-            const moduleOptions: APISelectMenuOption[] = (Object.keys(MODULE_LABELS) as SecurityModule[]).map((module) => ({
+            const moduleOptions: APISelectMenuOption[] = (Object.keys(MODULE_LABELS) as ShownModule[]).map((module) => ({
                 label: MODULE_LABELS[module].label,
                 value: module,
                 description: module === "anti_phishing" && !HAS_MESSAGE_INTENT
@@ -228,7 +221,7 @@ export async function handleSecurityInteraction(
                 const isAdmin = memberHas(interaction, PermissionFlagsBits.Administrator);
                 if (!isOwner && !isAdmin) {
                     await replyEphemeral(api, interaction, {
-                        content: `❌ Only the **server owner** or an **administrator** can turn off: ${disabling.map(m => MODULE_LABELS[m].label).join(", ")}.\n-# This protects you against a rogue moderator disabling your protection.`,
+                        content: `❌ Only the **server owner** or an **administrator** can turn off: ${disabling.map(m => MODULE_LABELS[m as ShownModule]?.label ?? m).join(", ")}.\n-# This protects you against a rogue moderator disabling your protection.`,
                     });
                     return true;
                 }
@@ -255,7 +248,7 @@ export async function handleSecurityInteraction(
                 anti_spam: enabled.has("anti_spam"),
                 anti_phishing: enabled.has("anti_phishing"),
                 event_log: enabled.has("event_log"),
-                backups: enabled.has("backups"),
+                backups: enabled.has("anti_nuke"),
                 event_log_channel_id: enabled.has("event_log") ? logChannel : null,
                 spam_threshold: levelCfg.spam_threshold,
                 spam_window_sec: levelCfg.spam_window_sec,
@@ -271,12 +264,19 @@ export async function handleSecurityInteraction(
 
             // make sure there is something to restore from
             let initialBackup: Awaited<ReturnType<typeof createBackup>> = null;
+            let pendingInitial = false;
+            let existingSnapshotId: number | null = null;
             if (newConfig.anti_nuke || newConfig.backups) {
                 const latest = await db.getLatestSecurityBackup(guildId).catch(() => null);
-                if (!latest) initialBackup = await createBackup(api, db, guildId, "initial (security setup)").catch(() => null);
+                if (latest) existingSnapshotId = latest.id;
+                else {
+                    pendingInitial = true;
+                    initialBackup = await createBackup(api, db, guildId, "initial (security setup)").catch(() => null);
+                    if (initialBackup) pendingInitial = false;
+                }
             }
 
-            const lines = (Object.keys(MODULE_LABELS) as SecurityModule[])
+            const lines = (Object.keys(MODULE_LABELS) as ShownModule[])
                 .map(m => `${newConfig[m] ? "✅" : "⚪"} ${MODULE_LABELS[m].emoji} **${MODULE_LABELS[m].label}**`);
             const notes: string[] = [];
             if (newConfig.event_log && newConfig.event_log_channel_id) notes.push(`Event log → <#${newConfig.event_log_channel_id}>`);
@@ -284,7 +284,8 @@ export async function handleSecurityInteraction(
             if (newConfig.anti_nuke) notes.push(`Anti-nuke response: **${nukeAction === "strip_ban" ? "strip roles + ban" : nukeAction}**`);
             if (newConfig.anti_phishing && !HAS_MESSAGE_INTENT) notes.push("⚠️ Anti-Phishing needs `HAS_MESSAGE_INTENT=1` (Message Content Intent) to read links.");
             if (initialBackup) notes.push(`Initial backup created: **#${initialBackup.id}** (${initialBackup.channels} channels, ${initialBackup.roles} roles).`);
-            else if ((newConfig.anti_nuke || newConfig.backups)) notes.push("Auto-backup runs every **10 minutes** (first one may take up to 10 min).");
+            else if (existingSnapshotId !== null) notes.push(`Auto-backup active from snapshot **#${existingSnapshotId}** (refreshed every 10 min, only when something changed).`);
+            else if (pendingInitial) notes.push("Auto-backup runs every **10 minutes** (first one may take up to 10 min).");
 
             await api.interactions.reply(interaction.id, interaction.token, {
                 embeds: [{
@@ -310,90 +311,12 @@ export async function handleSecurityInteraction(
             }
 
             // background: initial backup if it was too slow for the reply
-            if ((newConfig.anti_nuke || newConfig.backups) && !initialBackup) {
+            if (pendingInitial) {
                 createBackup(api, db, guildId, "initial (security setup)").then(result => {
                     if (result) console.log(styleText("dim", `[backup] ${guildId}: initial #${result.id}`));
                 });
             }
             return true;
-        }
-
-        // ------------------------- /backup -------------------------
-        if (interaction.type === InteractionType.ApplicationCommand && interaction.data.name === "backup") {
-            const options = "options" in interaction.data ? interaction.data.options : undefined;
-            const subcommandOption = options?.find(o => o.type === ApplicationCommandOptionType.Subcommand);
-            const subcommand = subcommandOption?.name ?? "create";
-            const subcommandOptions = subcommandOption && "options" in subcommandOption ? subcommandOption.options : undefined;
-
-            if (subcommand === "create") {
-                if (!hasAppPerms(interaction, PermissionFlagsBits.ManageChannels | PermissionFlagsBits.ManageRoles)) {
-                    await replyEphemeral(api, interaction, {
-                        content: "❌ I need the **Manage Channels** and **Manage Roles** permissions to create a backup.",
-                    });
-                    return true;
-                }
-                const result = await createBackup(api, db, guildId, `manual by ${username}`);
-                if (!result) {
-                    await replyEphemeral(api, interaction, { content: "❌ Failed to create a backup - check my permissions and try again." });
-                    return true;
-                }
-                await db.logSecurityEvent(guildId, "backup", userId, null, { id: result.id });
-                redis?.publish("security_event", "backup");
-                await api.interactions.reply(interaction.id, interaction.token, {
-                    content: `💾 Backup **#${result.id}** created — ${result.channels} channels, ${result.roles} roles stored.\n-# Use \`/backup list\` to restore it later.`,
-                    allowed_mentions: { parse: [] },
-                    flags: MessageFlags.Ephemeral,
-                });
-                return true;
-            }
-
-            if (subcommand === "list") {
-                const backups = await db.getSecurityBackups(guildId, 10);
-                if (backups.length === 0) {
-                    await replyEphemeral(api, interaction, {
-                        content: "No backups yet. Run `/backup create` (or enable the Auto-Backups module via `/security`).",
-                    });
-                    return true;
-                }
-                const rows = backups.map(b =>
-                    `**#${b.id}** · <t:${b.created_at}:R> · ${b.meta?.channels ?? "?"} channels, ${b.meta?.roles ?? "?"} roles${b.reason ? ` · ${trim(b.reason, 50)}` : ""}`
-                );
-                const buttons = backups.slice(0, 5).map(b => ({
-                    type: ComponentType.Button as const,
-                    style: ButtonStyle.Danger as const,
-                    label: `Restore #${b.id}`,
-                    custom_id: `backup_restore:${b.id}`,
-                }));
-                await replyEphemeral(api, interaction, {
-                    embeds: [{
-                        title: "💾 Recent backups",
-                        color: 0x5865f2,
-                        description: rows.join("\n"),
-                        footer: { text: `${backups.length} shown - restoring only recreates missing channels & roles` },
-                    }],
-                    components: [
-                        { type: ComponentType.ActionRow, components: buttons },
-                    ],
-                });
-                return true;
-            }
-
-            if (subcommand === "restore") {
-                const idOption = subcommandOptions?.find(o => o.name === "id");
-                const requestedId = idOption && "value" in idOption ? Number(idOption.value) : null;
-                const backup = requestedId
-                    ? await db.getSecurityBackup(guildId, requestedId)
-                    : await db.getLatestSecurityBackup(guildId);
-                if (!backup) {
-                    await replyEphemeral(api, interaction, {
-                        content: requestedId ? `❌ Backup #${requestedId} doesn't exist for this server.` : "❌ No backups yet - run `/backup create` first.",
-                    });
-                    return true;
-                }
-                await sendRestoreConfirm(api, interaction, backup.id, backup.created_at, backup.meta?.channels ?? 0, backup.meta?.roles ?? 0);
-                return true;
-            }
-            return false;
         }
 
         // ------------------------- quarantine buttons -------------------------
@@ -431,98 +354,8 @@ export async function handleSecurityInteraction(
             return true;
         }
 
-        // ------------------------- backup restore confirm -------------------------
-        if (interaction.type === InteractionType.MessageComponent && interaction.data.custom_id.startsWith("backup_restore:")) {
-            const backupId = Number(interaction.data.custom_id.slice("backup_restore:".length));
-            const backup = await db.getSecurityBackup(guildId, backupId);
-            if (!backup) {
-                await replyEphemeral(api, interaction, { content: `❌ Backup #${backupId} no longer exists.` });
-                return true;
-            }
-            await sendRestoreConfirm(api, interaction, backup.id, backup.created_at, backup.meta?.channels ?? 0, backup.meta?.roles ?? 0);
-            return true;
-        }
-
-        if (interaction.type === InteractionType.MessageComponent && interaction.data.custom_id.startsWith("backup_do:")) {
-            const backupId = Number(interaction.data.custom_id.slice("backup_do:".length));
-            if (!memberHas(interaction, PermissionFlagsBits.ManageChannels) || !memberHas(interaction, PermissionFlagsBits.ManageRoles)) {
-                await replyEphemeral(api, interaction, { content: "❌ You need **Manage Channels** and **Manage Roles** to restore a backup." });
-                return true;
-            }
-            if (!hasAppPerms(interaction, PermissionFlagsBits.ManageChannels | PermissionFlagsBits.ManageRoles)) {
-                await replyEphemeral(api, interaction, { content: "❌ I need **Manage Channels** and **Manage Roles** to restore a backup." });
-                return true;
-            }
-
-            const backup = await db.getSecurityBackup(guildId, backupId);
-            if (!backup) {
-                await replyEphemeral(api, interaction, { content: `❌ Backup #${backupId} no longer exists.` });
-                return true;
-            }
-
-            await api.interactions.reply(interaction.id, interaction.token, {
-                content: "⏳ Restoring…",
-                allowed_mentions: { parse: [] },
-                flags: MessageFlags.Ephemeral,
-            });
-
-            const result = await restoreBackup(api, backup, `Manual restore of #${backupId} by ${username}`);
-            await recordSecurityEvent(db, redis, guildId, "restore", userId, null, {
-                backup_id: backupId,
-                channels: result.channelsCreated.length,
-                roles: result.rolesCreated.length,
-            });
-
-            const cfg = await db.getSecurityConfig(guildId).catch(() => null);
-            const embed: APIEmbed = {
-                title: `♻️ Backup #${backupId} restored`,
-                color: 0x57f287,
-                description: trim(restoreSummary(result), 3900),
-                timestamp: new Date().toISOString(),
-                footer: { text: `restored by ${username}` },
-            };
-            await api.interactions.followUp(interaction.id, interaction.token, {
-                embeds: [embed],
-                allowed_mentions: { parse: [] },
-                flags: MessageFlags.Ephemeral,
-            }).catch(async () => {
-                await api.channels.createMessage(interaction.message.channel_id, { embeds: [embed], allowed_mentions: { parse: [] } }).catch(() => null);
-            });
-            await sendSecurityLog(api, db, guildId, cfg, embed);
-            return true;
-        }
     } catch (err) {
         console.error(`Error with security interaction (${interaction.type === InteractionType.ApplicationCommand ? `/${(interaction.data as { name?: string }).name}` : interaction.type}): ${err}`);
     }
     return false;
-}
-
-async function sendRestoreConfirm(
-    api: API | API2,
-    interaction: APIInteraction,
-    backupId: number,
-    createdAt: number,
-    channels: number,
-    roles: number,
-) {
-    await replyEphemeral(api, interaction, {
-        embeds: [{
-            title: `♻️ Restore backup #${backupId}?`,
-            color: 0xfee75c,
-            description: [
-                `Created <t:${createdAt}:R> · ${channels} channels, ${roles} roles`,
-                "",
-                "Only **missing** channels & roles are recreated - existing ones stay untouched.",
-            ].join("\n"),
-        }],
-        components: [{
-            type: ComponentType.ActionRow,
-            components: [{
-                type: ComponentType.Button,
-                style: ButtonStyle.Danger,
-                label: "Restore now",
-                custom_id: `backup_do:${backupId}`,
-            }],
-        }],
-    });
 }

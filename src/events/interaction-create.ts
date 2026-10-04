@@ -155,7 +155,7 @@ const handler: EventHandler<GatewayDispatchEvents.InteractionCreate> = {
                 return;
             }
 
-            // security modules: /security, /backup, quarantine & restore buttons
+            // security modules: /security modal + quarantine approval buttons
             else if (guildId && await handleSecurityInteraction(interaction, api, redis, db, userContextHash)) {
                 return;
             }
@@ -794,7 +794,7 @@ const handler: EventHandler<GatewayDispatchEvents.InteractionCreate> = {
                         serverStatMsg += `\nModerated in last 7 days: \`${recentModerations.toLocaleString()}\``;
                     }
                     if (securityConfig) {
-                        const active = (["anti_nuke", "quarantine", "anti_spam", "anti_phishing", "event_log", "backups"] as const)
+                        const active = (["anti_nuke", "quarantine", "anti_spam", "anti_phishing", "event_log"] as const)
                             .filter(module => securityConfig[module]);
                         serverStatMsg += `\nSecurity: ${active.length > 0 ? active.map(module => `\`${module}\``).join(", ") : "*all off*"}`;
                     }

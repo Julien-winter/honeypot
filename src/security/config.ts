@@ -58,7 +58,7 @@ export function isModuleEnabled(cfg: SecurityConfig, module: SecurityModule): bo
   return cfg[module];
 }
 
-export const SECURITY_MODULES: SecurityModule[] = ['anti_nuke', 'quarantine', 'anti_spam', 'anti_phishing', 'event_log', 'backups'];
+export const SECURITY_MODULES: SecurityModule[] = ['anti_nuke', 'quarantine', 'anti_spam', 'anti_phishing', 'event_log'];
 
 /** Modules that only the owner / an administrator may switch off (mirrors Protector's "protected modules"). */
 export const CRITICAL_MODULES: SecurityModule[] = ['anti_nuke', 'quarantine', 'anti_spam'];

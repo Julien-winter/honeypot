@@ -24,7 +24,7 @@ The bot stores only the minimum data needed to function in a local SQLite databa
 - Server ID, user ID, and timestamp for each incident where a user triggers the honeypot (counter/stat purposes)
 - Custom messages set by server administrators (honeypot warning, DM, and log messages), if provided
 - Security settings (`/security`), security incident records (server ID, incident type such as spam/phishing/anti-nuke, timestamp, and the ID of the user or bot involved), and the IDs of quarantined bots, when those optional modules are enabled
-- Structure backups (channel and role names, IDs, positions, permissions and overwrites) created by the Auto-Backups/Anti-Nuke modules, kept for the 6 most recent snapshots per server
+- Structure backups (channel and role names, IDs, positions, permissions and overwrites) created automatically by the Anti-Nuke module (every 10 minutes, only when the structure changed), kept for the 4 most recent snapshots per server
 
 ### How We Use Your Information
 
