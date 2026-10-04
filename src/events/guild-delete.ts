@@ -8,7 +8,9 @@ const handler: EventHandler<GatewayDispatchEvents.GuildDelete> = {
         try {
             // The bot didnt actually leave the guild, discord itself merely is having some issues there
             if (guild.unavailable === true) return;
-            await db.deleteConfig(guild.id);
+            // Grace period: keep data for 3 days (rejoin restores everything),
+            // a daily cron purges it afterwards to save storage.
+            await db.markGuildLeft(guild.id);
             invalidateGuildInfoCache(guild.id, redis);
             if (redis) removeGuildSubscribedChannelCache(guild.id, redis);
             redis?.publish("guild_count", "-1");

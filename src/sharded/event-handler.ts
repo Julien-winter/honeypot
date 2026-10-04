@@ -13,7 +13,7 @@ if (!token) throw new Error("DISCORD_TOKEN environment variable not set.");
 if (!process.env.REDIS_URL) throw new Error("REDIS_URL environment variable not set.");
 let applicationId = atob(token.split(".")[0]!); // i bet most didn’t know this fact about discord tokens
 
-process.title = "Honeypot Bot (riskymh.dev) - Event Handler Worker";
+process.title = "Honeypot Bot - Event Handler Worker";
 process.env.HAS_PROXY_WS = "true";
 await db.initDb();
 

@@ -6,7 +6,7 @@ import { CUSTOM_EMOJI_ID } from "./constants";
 const honeypotThumbnail: APIThumbnailComponent = {
   type: ComponentType.Thumbnail,
   media: {
-    url: "https://honeypot.riskymh.dev/honeypot.png"
+    url: getThumbnailUrl()
   }
 }
 
@@ -58,6 +58,15 @@ export function getStatsPageUrl(): string {
 }
 export function getSiteUrl(): string {
   return getPublicBaseUrl() ?? "https://honeypot.riskymh.dev";
+}
+export function getRecoveryUrl(): string {
+  if (process.env.RECOVERY_URL) return process.env.RECOVERY_URL;
+  const base = getPublicBaseUrl();
+  return base ? `${base}/docs#hacked-account` : "https://honeypot.riskymh.dev/blog/discord-account-hacked-recovery";
+}
+
+export function getThumbnailUrl(): string {
+  return process.env.THUMBNAIL_URL || "https://honeypot.riskymh.dev/honeypot.png";
 }
 export function getDashboardUrl(): string {
   if (process.env.DASHBOARD_URL) return process.env.DASHBOARD_URL;
@@ -139,7 +148,7 @@ export function honeypotUserDMMessage(userId: string, action: HoneypotConfig["ac
           {
             type: ComponentType.TextDisplay,
             content: `## Honeypot Triggered\nHey <@${userId}>, you have been **${actionText}** from **${discoverableLink ? `[${guildName}](${discoverableLink})` : guildName}** for sending a message in the [honeypot](${link}) channel.`
-              + "\n\nThis may have happened if someone gained access to your account through malware, stolen sessions or leaked passwords. Please [recover your account](https://honeypot.riskymh.dev/blog/discord-account-hacked-recovery), scan your device and reinstall your OS if needed."
+              + `\n\nThis may have happened if someone gained access to your account through malware, stolen sessions or leaked passwords. Please [recover your account](${getRecoveryUrl()}), scan your device and reinstall your OS if needed.`
           },
           ...(reinviteUrl ? [{
             type: ComponentType.TextDisplay,
@@ -195,8 +204,13 @@ export function honeypotUserDMMessage(userId: string, action: HoneypotConfig["ac
   }
 }
 
+export function getDefaultHoneypotUserDMMessage(): string {
+  return "## Honeypot Triggered\n\nHey {{user:mention}}, you have been **{{action:text}}** from **{{server:name}}** for sending a message in the [honeypot]({{honeypot:channel:link}}) channel."
+    + `\n\nThis may have happened if someone gained access to your account through malware, stolen sessions or leaked passwords. Please [recover your account](${getRecoveryUrl()}), scan your device and reinstall your OS if needed.`;
+}
+// Kept for backwards compatibility (custom messages saved earlier equaled this text).
 export const defaultHoneypotUserDMMessage = "## Honeypot Triggered\n\nHey {{user:mention}}, you have been **{{action:text}}** from **{{server:name}}** for sending a message in the [honeypot]({{honeypot:channel:link}}) channel."
-  + "\n\nThis may have happened if someone gained access to your account through malware, stolen sessions or leaked passwords. Please [recover your account](https://honeypot.riskymh.dev/blog/discord-account-hacked-recovery), scan your device and reinstall your OS if needed.";
+  + "\n\nThis may have happened if someone gained access to your account through malware, stolen sessions or leaked passwords. Please recover your account, scan your device and reinstall your OS if needed.";
 export const defaultHoneypotUserDMMessageReinvitePart = "\n\nYou can rejoin via {{reinvite:link}}";
 
 export function logActionMessage(user: Partial<APIUser> & { id: string }, member: PartialAPIMessageInteractionGuildMember | null, honeypotChannelId: string, action: HoneypotConfig["action"], customText?: string | null, moderatedCount: number = 0): RESTPostAPIChannelMessageJSONBody {

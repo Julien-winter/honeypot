@@ -8,6 +8,9 @@ import { honeypotUserDMMessage, honeypotWarningMessage, logActionMessage } from 
 import { DiscordAPIError } from "@discordjs/rest";
 import { styleText } from "node:util";
 import { getDiscordDate } from "../utils/tools";
+import { moderationBucket } from "../utils/rate-limit";
+import { tryStartModeration, reportProgress, endModeration } from "../utils/moderation-progress";
+import { maybeFilterLink } from "../utils/link-filter";
 import type { HoneypotConfig, HoneypotChannel } from "../utils/db";
 
 
@@ -38,6 +41,7 @@ const handler: EventHandler<GatewayDispatchEvents.MessageCreate> = {
                 guildId: message.guild_id,
                 messageId: message.id,
                 msgType: message.type,
+                content: (message as { content?: string }).content ?? null,
                 fullMember: message.member,
                 fullUser: message.author,
             }, api, db, redis);
@@ -57,8 +61,8 @@ const handler: EventHandler<GatewayDispatchEvents.MessageCreate> = {
 };
 
 const onMessage = async (
-    { userId, channelId, guildId, messageId, threadId, msgType, fullUser, fullMember }
-        : { userId: string, channelId: string, guildId: string, messageId?: string, threadId?: string, msgType?: MessageType, fullUser?: APIUser, fullMember?: PartialAPIMessageInteractionGuildMember },
+    { userId, channelId, guildId, messageId, threadId, msgType, content, fullUser, fullMember }
+        : { userId: string, channelId: string, guildId: string, messageId?: string, threadId?: string, msgType?: MessageType, content?: string | null, fullUser?: APIUser, fullMember?: PartialAPIMessageInteractionGuildMember },
     api: API | API2,
     db: typeof import("../utils/db"),
     redis?: Bun.RedisClient
@@ -82,9 +86,21 @@ const onMessage = async (
                 const ids = channels.map(c => c.channel_id);
                 setSubscribedChannelCache(guildId, ids.length > 0 ? ids : ["none"], redis);
             }
+            // not the honeypot: run the default-on scam link filter, then done
+            await maybeFilterLink({
+                api, guildId, channelId, userId, messageId, content,
+                memberPermissions: (fullMember as { permissions?: string } | undefined)?.permissions ?? null,
+                config,
+            });
             // the last return statement before banning said person
             return;
         }
+
+        // queue + dedup: skip if this user is already being moderated
+        if (!tryStartModeration(guildId, userId)) {
+            return console.log(styleText("dim", "Already moderating user, skipping..."));
+        }
+        await reportProgress(api, guildId, config.log_channel_id);
 
         if (messageId && HAS_MESSAGE_INTENT && config.experiments.includes("ensure-msg-delete") && config.action !== 'disabled') {
             deleteTriggeringMessage(api, channelId, messageId);
@@ -92,9 +108,13 @@ const onMessage = async (
             emojiReactAcknowledgement(api, channelId, messageId);
         }
 
-        if (config.action === 'disabled') return;
+        if (config.action === 'disabled') {
+            await endModeration(api, guildId, userId, config.log_channel_id, null);
+            return;
+        }
 
         if (redis && await upsertIsAlreadyModerating(guildId, userId, redis)) {
+            await endModeration(api, guildId, userId, config.log_channel_id, null);
             return console.log(styleText("dim", "Already moderating user, skipping..."));
         }
 
@@ -121,6 +141,16 @@ const onMessage = async (
 
         if (!failed && !permissionSkip) {
             await db.logModerateEvent(guildId, userId, matchedChannel.channel_id, config.action === 'ban' ? 'ban' : 'softban', "Posted in honeypot channel");
+            if (config.experiments.includes("shared-banlist")) {
+                await db.addToSharedBanlist(userId, config.action === 'ban' ? 'ban' : 'softban')
+                    .catch((err) => console.log(styleText("dim", `Failed to record shared ban: ${err}`)));
+            }
+            // fingerprint for ban-evasion detection (uses display data only)
+            await db.upsertFingerprint(userId, {
+                username: (fullUser as any)?.username ?? null,
+                global_name: (fullUser as any)?.global_name ?? null,
+                avatar: (fullUser as any)?.avatar ?? null,
+            }).catch((err) => console.log(styleText("dim", `Failed to record fingerprint: ${err}`)));
             redis?.publish("moderate_event", "+1");
 
             const id = messageId || threadId || null;
@@ -142,8 +172,15 @@ const onMessage = async (
             HAS_MESSAGE_INTENT && config.experiments.includes("ensure-msg-delete") && failed === false
                 ? addToEnsureMsgDeleteQueue(userId, guildId, redis) : null,
         ]);
+        await endModeration(api, guildId, userId, config.log_channel_id, permissionSkip ? null : {
+            action: config.action === 'ban' ? 'ban' : 'softban',
+            failed: failed !== false,
+        });
     } catch (err) {
         console.error(`Error with MessageCreate handler: ${err}`);
+        try {
+            await endModeration(api, guildId, userId, null, null);
+        } catch { /* ignore */ }
     }
 };
 
@@ -159,6 +196,7 @@ async function executeAction(
 
     try {
         if (config.action === 'ban') {
+            await moderationBucket.take();
             await api.guilds.banUser(
                 guildId,
                 userId,
@@ -167,6 +205,7 @@ async function executeAction(
             );
             Bun.sleep(150).then(() => preActionAbort.abort());
         } else if (config.action === 'softban' || (config.action as string) === 'kick') {
+            await moderationBucket.take();
             await api.guilds.banUser(
                 guildId,
                 userId,
@@ -176,6 +215,7 @@ async function executeAction(
             Bun.sleep(150).then(() => preActionAbort.abort());
             try {
                 await Bun.sleep(250);
+                await moderationBucket.take();
                 await api.guilds.unbanUser(
                     guildId,
                     userId,
@@ -327,8 +367,9 @@ async function maybeForwardMessage(api: API | API2, guildId: string, channelId: 
     });
 }
 
-function maybeTimeoutMember(api: API | API2, guildId: string, userId: string, config: HoneypotConfig, preActionAbort: AbortSignal) {
+async function maybeTimeoutMember(api: API | API2, guildId: string, userId: string, config: HoneypotConfig, preActionAbort: AbortSignal) {
     if (!config.experiments.includes("timeout-first")) return;
+    await moderationBucket.take();
     return api.guilds.editMember(guildId, userId,
         { communication_disabled_until: new Date(Date.now() + 3_600_000).toISOString() },
         { reason: `Triggered honeypot -> timeout for 1hr before ${config.action}`, signal: preActionAbort }

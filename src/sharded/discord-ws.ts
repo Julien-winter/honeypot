@@ -8,7 +8,7 @@ if (!process.env.REDIS_URL) throw new Error("REDIS_URL environment variable not 
 const token = process.env.DISCORD_TOKEN;
 
 
-process.title = "Honeypot Bot (riskymh.dev) - Websocket Shard Worker";
+process.title = "Honeypot Bot - Websocket Shard Worker";
 
 process.on('uncaughtException', (err) => {
     console.error(`Unhandled Exception: ${err}`);

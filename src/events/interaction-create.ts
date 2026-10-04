@@ -1,11 +1,12 @@
 import { ButtonStyle, ChannelType, ComponentType, GatewayDispatchEvents, InteractionType, MessageFlags, PermissionFlagsBits, RESTJSONErrorCodes, SelectMenuDefaultValueType, TextInputStyle, type APIContainerComponent, type APIInteractionDataResolvedChannel, type APIModalInteractionResponseCallbackData, type APISelectMenuOption, type RESTPostAPIChannelMessageJSONBody, type APITextDisplayComponent } from "discord-api-types/v10";
 import type { EventHandler } from "./events";
 import type { HoneypotConfig } from "../utils/db";
-import { honeypotWarningMessage, defaultHoneypotWarningMessage, defaultHoneypotUserDMMessage, defaultLogActionMessage, logActionMessage, honeypotUserDMMessage, defaultHoneypotUserDMMessageReinvitePart, statsMessage } from "../utils/messages";
+import { honeypotWarningMessage, defaultHoneypotWarningMessage, defaultHoneypotUserDMMessage, getDefaultHoneypotUserDMMessage, defaultLogActionMessage, logActionMessage, honeypotUserDMMessage, defaultHoneypotUserDMMessageReinvitePart, statsMessage } from "../utils/messages";
 import { channelWarmerExperiment, randomChannelNameExperiment } from "../cron/experiments";
 import getBadWords from "../utils/bad-words.macro" with { type: "macro" };
 import { HAS_MESSAGE_INTENT } from "../utils/constants";
 import { getCommandIdCache, getGuildInfo, removeFromDeleteMessageCache, setSubscribedChannelCache } from "../utils/cache";
+import { getDocsUrl } from "../utils/messages";
 import { DiscordAPIError } from "@discordjs/rest";
 import { styleText } from "node:util";
 import { getDiscordDate, hasPermission, trim } from "../utils/tools";
@@ -32,6 +33,7 @@ const handler: EventHandler<GatewayDispatchEvents.InteractionCreate> = {
                 const result = await db.getConfigWithChannels(guildId);
                 const config: HoneypotConfig = result?.config ?? {
                     guild_id: guildId,
+                    name: null,
                     log_channel_id: null,
                     action: 'softban',
                     experiments: []
@@ -40,23 +42,47 @@ const handler: EventHandler<GatewayDispatchEvents.InteractionCreate> = {
 
                 // some experiments we should only show to "power users" that may need it after seeing issues & not just clicking everything
                 const hasHoneypotHistory = await db.getGuildHasHoneypotHistory(guildId);
+                // live usage counts: recommended first, then most-used first
+                const expUsage = await db.getExperimentUsage().catch(() => ({} as Record<string, number>));
 
                 const manyHoneypots = config.experiments.includes("many-honeypots");
-                const experimentOptions = ([
-                    HAS_MESSAGE_INTENT && { label: "Forward Message", value: "forward-message", description: "Forward the triggered message to the log channel", default: config.experiments.includes("forward-message") },
-                    { label: "💡 Reinvite", value: "reinvite", description: "In the DM message give an invite code to rejoin (recommended)", default: config.experiments.includes("reinvite") },
-                    { label: "Timeout First", value: "timeout-first", description: "Timeout users (for 1hr) to limit their activity on rejoin", default: config.experiments.includes("timeout-first") },
-                    // { label: "Timeout for Typing", value: "timeout-for-typing", description: "Timeout users (for 10sec) who are typing in the honeypot channel", default: config.experiments.includes("timeout-for-typing") },
-                    { label: "Channel Warmer", value: "channel-warmer", description: "Keep the honeypot channel active (every day)", default: config.experiments.includes("channel-warmer") },
-                    { label: "Random Channel Name", value: "random-channel-name", description: "Randomize the honeypot channel name (every day)", default: config.experiments.includes("random-channel-name") },
-                    { label: "💡 Only More Recent Delete", value: "only-recent-delete", description: "Only delete last 15min of messages (instead of 1hr)", default: config.experiments.includes("only-recent-delete") },
-                    { label: "No Warning Msg", value: "no-warning-msg", description: "Don’t include the warning message in the #honeypot channel (deletes current if already present)", default: config.experiments.includes("no-warning-msg") },
-                    { label: "No DM", value: "no-dm", description: "Don’t DM the user that they triggered the honeypot", default: config.experiments.includes("no-dm") },
-                    { label: "Random Channel Name (Chaos)", value: "random-channel-name-chaos", description: "Randomise the honeypot channel name with random characters (every day)", default: config.experiments.includes("random-channel-name-chaos") },
-                    hasHoneypotHistory && { label: "⚙️ Recreate Channel", value: "recreate-channel", description: "Remake the honeypot channel (every day) - experiment may be removed & messages aren't preserved", default: config.experiments.includes("recreate-channel") },
-                    { label: "💡 Many Honeypots", value: "many-honeypots", description: "Ability to create multiple honeypot channels - must submit modal and re-run /honeypot to set them", default: config.experiments.includes("many-honeypots") },
-                    HAS_MESSAGE_INTENT && hasHoneypotHistory && { label: "⚙️ Ensure Message Deletion (only use if issues)", value: "ensure-msg-delete", description: "Search & delete leftover messages from moderated users 2min after moderation.", default: config.experiments.includes("ensure-msg-delete") },
-                ] satisfies (APISelectMenuOption | false)[]).filter(e => !!e);
+                const experimentDefs: { label: string; value: string; description: string; recommended: boolean; show: boolean }[] = [
+                    { label: "Forward Message", value: "forward-message", description: "Forward the triggered message to the log channel", recommended: false, show: HAS_MESSAGE_INTENT },
+                    { label: "💡 Reinvite", value: "reinvite", description: "In the DM message give an invite code to rejoin (recommended)", recommended: true, show: true },
+                    { label: "Timeout First", value: "timeout-first", description: "Timeout users (for 1hr) to limit their activity on rejoin", recommended: false, show: true },
+                    { label: "Channel Warmer", value: "channel-warmer", description: "Keep the honeypot channel active (every day)", recommended: false, show: true },
+                    { label: "Random Channel Name", value: "random-channel-name", description: "Randomize the honeypot channel name (every day)", recommended: false, show: true },
+                    { label: "💡 Only More Recent Delete", value: "only-recent-delete", description: "Only delete last 15min of messages (instead of 1hr)", recommended: true, show: true },
+                    { label: "No Warning Msg", value: "no-warning-msg", description: "Don’t include the warning message in the #honeypot channel (deletes current if already present)", recommended: false, show: true },
+                    { label: "No DM", value: "no-dm", description: "Don’t DM the user that they triggered the honeypot", recommended: false, show: true },
+                    { label: "Random Channel Name (Chaos)", value: "random-channel-name-chaos", description: "Random gibberish, fancy fonts or lookalikes (every day)", recommended: false, show: true },
+                    { label: "⚙️ Recreate Channel", value: "recreate-channel", description: "Remake the honeypot channel (every day) - experiment may be removed & messages aren't preserved", recommended: false, show: hasHoneypotHistory },
+                    { label: "💡 Many Honeypots", value: "many-honeypots", description: "Ability to create multiple honeypot channels - must submit modal and re-run /honeypot to set them", recommended: true, show: true },
+                    { label: "⚙️ Ensure Message Deletion (only use if issues)", value: "ensure-msg-delete", description: "Search & delete leftover messages from moderated users 2min after moderation.", recommended: false, show: !!(HAS_MESSAGE_INTENT && hasHoneypotHistory) },
+                    { label: "🛡️ Alt Detection", value: "alt-detection", description: "Kick suspicious joins: ban evaders, new accounts, no avatar + DM them (opt-in)", recommended: false, show: true },
+                    { label: "🛡️ Shared Banlist", value: "shared-banlist", description: "Kick known spammers on join + DM them (opt-in, off by default)", recommended: false, show: true },
+                    { label: "No Link Filter", value: "no-link-filter", description: "Disable automatic scam-link deletion", recommended: false, show: true },
+                    { label: "🏆 Leaderboard", value: "leaderboard", description: "Show this server in the public top-protected ranking (opt-in)", recommended: false, show: true },
+                ];
+                const experimentOptions = experimentDefs
+                    .filter((d) => d.show)
+                    .map((d) => {
+                        const used = expUsage[d.value] ?? 0;
+                        const suffix = used > 0 ? ` • used by ${used} server${used === 1 ? "" : "s"}` : "";
+                        return {
+                            label: d.label,
+                            value: d.value,
+                            // Discord caps descriptions at 100 chars
+                            description: (d.description + suffix).slice(0, 100),
+                            default: config.experiments.includes(d.value as any),
+                        } satisfies APISelectMenuOption;
+                    })
+                    .sort((a, b) => {
+                        const ra = experimentDefs.find((d) => d.value === a.value)?.recommended ? 1 : 0;
+                        const rb = experimentDefs.find((d) => d.value === b.value)?.recommended ? 1 : 0;
+                        if (ra !== rb) return rb - ra;
+                        return (expUsage[b.value] ?? 0) - (expUsage[a.value] ?? 0);
+                    });
 
                 const modal: APIModalInteractionResponseCallbackData = {
                     title: "Honeypot",
@@ -131,6 +157,8 @@ const handler: EventHandler<GatewayDispatchEvents.InteractionCreate> = {
             else if (guildId && interaction.type === InteractionType.ModalSubmit && interaction.data.custom_id === `honeypot_config_modal:${userContextHash}`) {
                 const newConfig: HoneypotConfig = {
                     guild_id: guildId,
+                    name: null,
+                    icon: null,
                     log_channel_id: null,
                     action: 'softban',
                     experiments: []
@@ -171,7 +199,7 @@ const handler: EventHandler<GatewayDispatchEvents.InteractionCreate> = {
                     if (c.type === ComponentType.StringSelect) {
                         if (c.custom_id === "honeypot_experiments" && Array.isArray(c.values)) {
                             for (const val of c.values) {
-                                if (["no-warning-msg", "no-dm", "random-channel-name", "random-channel-name-chaos", "channel-warmer", "recreate-channel", "forward-message", "reinvite", "timeout-first", "only-recent-delete", "many-honeypots", "ensure-msg-delete"].includes(val)) {
+                                if (["no-warning-msg", "no-dm", "random-channel-name", "random-channel-name-chaos", "channel-warmer", "recreate-channel", "forward-message", "reinvite", "timeout-first", "only-recent-delete", "many-honeypots", "ensure-msg-delete", "alt-detection", "shared-banlist", "no-link-filter", "leaderboard"].includes(val)) {
                                     newConfig.experiments.push(val as any);
                                 }
                             }
@@ -374,6 +402,8 @@ const handler: EventHandler<GatewayDispatchEvents.InteractionCreate> = {
 
                 await db.setConfig({
                     guild_id: guildId,
+                    name: prevConfig?.name ?? null,
+                    icon: prevConfig?.icon ?? null,
                     log_channel_id: newConfig.log_channel_id,
                     action: newConfig.action,
                     experiments: newConfig.experiments,
@@ -441,7 +471,7 @@ const handler: EventHandler<GatewayDispatchEvents.InteractionCreate> = {
             }
 
             function getDmMessage(config: HoneypotConfig | null, guild: Awaited<ReturnType<typeof getGuildInfo>> | null): string {
-                let msg = defaultHoneypotUserDMMessage;
+                let msg = getDefaultHoneypotUserDMMessage();
                 if (config?.experiments?.includes("reinvite")) {
                     msg += defaultHoneypotUserDMMessageReinvitePart;
                 }
@@ -473,7 +503,7 @@ const handler: EventHandler<GatewayDispatchEvents.InteractionCreate> = {
                         {
                             type: ComponentType.TextDisplay,
                             content: "Set custom messages for the honeypot bot:\n" +
-                                "-# - You can use the variables in your messages shown in template/default text - [see all](https://honeypot.riskymh.dev/docs/configuration#message-variables)\n" +
+                                "-# - You can use the variables in your messages shown in template/default text - [see all](" + getDocsUrl() + ")\n" +
                                 "-# - If you leave the textbox empty, then it'll reset to default\n" +
                                 "-# - Make sure to keep the messages clear and informative!"
                         },
@@ -560,7 +590,7 @@ const handler: EventHandler<GatewayDispatchEvents.InteractionCreate> = {
                             if (c.value !== defaultHoneypotWarningMessage) newMessages.warning_message = c.value;
                         }
                         if (c.custom_id === "honeypot_dm_message" && c.value.length) {
-                            if (c.value !== defaultHoneypotUserDMMessage && c.value !== getDmMessage(config, guild)) newMessages.dm_message = c.value;
+                            if (c.value !== defaultHoneypotUserDMMessage && c.value !== getDefaultHoneypotUserDMMessage() && c.value !== getDmMessage(config, guild)) newMessages.dm_message = c.value;
                         }
                         if (c.custom_id === "log_message" && c.value.length) {
                             if (c.value !== defaultLogActionMessage) newMessages.log_message = c.value;
@@ -1051,6 +1081,13 @@ function validateConfigPermissions(
             `You need the Timeout Members permission to enable the “Timeout First” experiment.`);
         need(hasPermission(BigInt(appPermissions ?? "0"), PermissionFlagsBits.ModerateMembers),
             `I need the Timeout Members permission to enable the “Timeout First” experiment.`);
+    }
+
+    if (config.experiments.includes("alt-detection") || config.experiments.includes("shared-banlist")) {
+        need(!memberPermissions || hasPermission(BigInt(memberPermissions), PermissionFlagsBits.KickMembers),
+            `You need the Kick Members permission to enable join-guard experiments (Alt Detection / Shared Banlist).`);
+        need(hasPermission(BigInt(appPermissions ?? "0"), PermissionFlagsBits.KickMembers),
+            `I need the Kick Members permission for join-guard experiments (Alt Detection / Shared Banlist).`);
     }
 
     if (config.experiments.includes("no-dm") && config.experiments.includes("reinvite")) {

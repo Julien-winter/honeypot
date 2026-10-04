@@ -2,6 +2,8 @@ import { SQL } from "bun";
 
 export type HoneypotConfig = {
   guild_id: string;
+  name: string | null;
+  icon: string | null;
   log_channel_id: string | null;
   action: 'softban' | 'ban' | 'disabled';
   experiments: (
@@ -16,7 +18,11 @@ export type HoneypotConfig = {
     "timeout-first" |
     "only-recent-delete" |
     "many-honeypots" |
-    "ensure-msg-delete"
+    "ensure-msg-delete" |
+    "alt-detection" |
+    "shared-banlist" |
+    "no-link-filter" |
+    "leaderboard"
   )[]
 };
 
@@ -133,9 +139,188 @@ CREATE INDEX IF NOT EXISTS idx_honeypot_events_stats ON honeypot_events(timestam
       }
       await tx`CREATE INDEX IF NOT EXISTS idx_honeypot_events_guild_action ON honeypot_events(guild_id, action)`;
     }
+  },
+  {
+    version: 6,
+    name: "shared banlist",
+    up: async (tx) => {
+      // Opt-in network: participating guilds share hashed spammer IDs (90d expiry).
+      if (db.options.adapter === "sqlite" || db.options.adapter === "postgres") {
+        await tx`CREATE TABLE IF NOT EXISTS shared_banlist (
+          user_hash TEXT PRIMARY KEY,
+          action TEXT DEFAULT 'softban',
+          created_at BIGINT DEFAULT 0,
+          expires_at BIGINT DEFAULT 0
+        )`;
+      } else if (db.options.adapter === "mysql" || db.options.adapter === "mariadb") {
+        await tx`CREATE TABLE IF NOT EXISTS shared_banlist (
+          user_hash VARCHAR(64) PRIMARY KEY,
+          action VARCHAR(20) DEFAULT 'softban',
+          created_at BIGINT DEFAULT 0,
+          expires_at BIGINT DEFAULT 0
+        )`;
+      } else {
+        throw new Error(`Unsupported database adapter: ${db.options.adapter}`);
+      }
+      await tx`CREATE INDEX IF NOT EXISTS idx_shared_banlist_expires ON shared_banlist(expires_at)`;
+    }
+  },
+  {
+    version: 7,
+    name: "guild names",
+    up: async (tx) => {
+      if (db.options.adapter === "sqlite" || db.options.adapter === "postgres") {
+        await tx`ALTER TABLE honeypot_config ADD COLUMN name TEXT`;
+      } else if (db.options.adapter === "mysql" || db.options.adapter === "mariadb") {
+        await tx`ALTER TABLE honeypot_config ADD COLUMN name VARCHAR(100)`;
+      } else {
+        throw new Error(`Unsupported database adapter: ${db.options.adapter}`);
+      }
+    }
+  },
+  {
+    version: 8,
+    name: "stats snapshots",
+    up: async (tx) => {      if (db.options.adapter === "sqlite" || db.options.adapter === "postgres") {
+        await tx`CREATE TABLE IF NOT EXISTS stats_snapshots (
+          day TEXT PRIMARY KEY,
+          guilds INTEGER DEFAULT 0,
+          moderations INTEGER DEFAULT 0
+        )`;
+      } else if (db.options.adapter === "mysql" || db.options.adapter === "mariadb") {
+        await tx`CREATE TABLE IF NOT EXISTS stats_snapshots (
+          day VARCHAR(10) PRIMARY KEY,
+          guilds INTEGER DEFAULT 0,
+          moderations INTEGER DEFAULT 0
+        )`;
+      } else {
+        throw new Error(`Unsupported database adapter: ${db.options.adapter}`);
+      }
+    }
+  },
+  {
+    version: 9,
+    name: "evasion fingerprints",
+    up: async (tx) => {      // Fingerprints of moderated accounts for ban-evasion detection.
+      if (db.options.adapter === "sqlite" || db.options.adapter === "postgres") {
+        await tx`CREATE TABLE IF NOT EXISTS evasion_fingerprints (
+          user_id TEXT PRIMARY KEY,
+          username TEXT,
+          global_name TEXT,
+          avatar TEXT,
+          last_seen BIGINT DEFAULT 0
+        )`;
+      } else if (db.options.adapter === "mysql" || db.options.adapter === "mariadb") {
+        await tx`CREATE TABLE IF NOT EXISTS evasion_fingerprints (
+          user_id VARCHAR(20) PRIMARY KEY,
+          username VARCHAR(64),
+          global_name VARCHAR(64),
+          avatar VARCHAR(64),
+          last_seen BIGINT DEFAULT 0
+        )`;
+      } else {
+        throw new Error(`Unsupported database adapter: ${db.options.adapter}`);
+      }
+      await tx`CREATE INDEX IF NOT EXISTS idx_evasion_lookup ON evasion_fingerprints(avatar, username)`;
+    }
+  },
+  {
+    version: 10,
+    name: "guild icons",
+    up: async (tx) => {
+      if (db.options.adapter === "sqlite" || db.options.adapter === "postgres") {
+        await tx`ALTER TABLE honeypot_config ADD COLUMN icon TEXT`;
+      } else if (db.options.adapter === "mysql" || db.options.adapter === "mariadb") {
+        await tx`ALTER TABLE honeypot_config ADD COLUMN icon VARCHAR(64)`;
+      } else {
+        throw new Error(`Unsupported database adapter: ${db.options.adapter}`);
+      }
+    }
+  },
+  {
+    version: 11,
+    name: "graceful leave",
+    up: async (tx) => {
+      // Kicked guilds are only marked (left_at); a cron purges them after 3 days.
+      if (db.options.adapter === "sqlite" || db.options.adapter === "postgres") {
+        await tx`ALTER TABLE honeypot_config ADD COLUMN left_at BIGINT DEFAULT 0`;
+      } else if (db.options.adapter === "mysql" || db.options.adapter === "mariadb") {
+        await tx`ALTER TABLE honeypot_config ADD COLUMN left_at BIGINT DEFAULT 0`;
+      } else {
+        throw new Error(`Unsupported database adapter: ${db.options.adapter}`);
+      }
+      await tx`CREATE INDEX IF NOT EXISTS idx_honeypot_config_left ON honeypot_config(left_at)`;
+    }
+  },
+  {
+    version: 12,
+    name: "premium users",
+    up: async (tx) => {
+      // Each paying customer gets their own bot instance.
+      if (db.options.adapter === "sqlite" || db.options.adapter === "postgres") {
+        await tx`CREATE TABLE IF NOT EXISTS premium_users (
+          user_id TEXT PRIMARY KEY,
+          username TEXT,
+          discord_token TEXT,
+          client_secret TEXT,
+          public_url TEXT,
+          donate_ltc TEXT,
+          status TEXT DEFAULT 'pending',
+          plan TEXT DEFAULT 'premium',
+          expires_at BIGINT DEFAULT 0,
+          created_at BIGINT DEFAULT 0,
+          runs INTEGER DEFAULT 0
+        )`;
+      } else if (db.options.adapter === "mysql" || db.options.adapter === "mariadb") {
+        await tx`CREATE TABLE IF NOT EXISTS premium_users (
+          user_id VARCHAR(20) PRIMARY KEY,
+          username VARCHAR(32),
+          discord_token VARCHAR(100),
+          client_secret VARCHAR(64),
+          public_url VARCHAR(128),
+          donate_ltc VARCHAR(64),
+          status VARCHAR(16) DEFAULT 'pending',
+          plan VARCHAR(16) DEFAULT 'premium',
+          expires_at BIGINT DEFAULT 0,
+          created_at BIGINT DEFAULT 0,
+          runs INTEGER DEFAULT 0
+        )`;
+      } else {
+        throw new Error(`Unsupported database adapter: ${db.options.adapter}`);
+      }
+      await tx`CREATE INDEX IF NOT EXISTS idx_premium_expires ON premium_users(expires_at)`;
+      await tx`CREATE INDEX IF NOT EXISTS idx_premium_status ON premium_users(status)`;
+    }
+  },
+  {
+    version: 13,
+    name: "premium payments",
+    up: async (tx) => {
+      if (db.options.adapter === "sqlite" || db.options.adapter === "postgres") {
+        await tx`CREATE TABLE IF NOT EXISTS premium_payments (
+          txid TEXT PRIMARY KEY,
+          user_id TEXT,
+          ltc_amount REAL,
+          eur_amount REAL,
+          confirmations INTEGER,
+          verified_at BIGINT
+        )`;
+      } else if (db.options.adapter === "mysql" || db.options.adapter === "mariadb") {
+        await tx`CREATE TABLE IF NOT EXISTS premium_payments (
+          txid VARCHAR(64) PRIMARY KEY,
+          user_id VARCHAR(20),
+          ltc_amount DOUBLE,
+          eur_amount DOUBLE,
+          confirmations INT,
+          verified_at BIGINT
+        )`;
+      } else {
+        throw new Error(`Unsupported database adapter: ${db.options.adapter}`);
+      }
+      await tx`CREATE INDEX IF NOT EXISTS idx_premium_payments_user ON premium_payments(user_id)`;
+    }
   }
 ];
-
 export async function initDb() {
   if (db.options.adapter === "sqlite") {
     try {
@@ -168,13 +353,17 @@ export async function initDb() {
         await m.up(tx);
         await tx`INSERT INTO _migrations (version, name) VALUES (${m.version}, ${m.name})`;
       });
-      if (appliedSet.size > 0) {
+      appliedSet.add(m.version);
+      if (applied.length > 0) {
         console.log(`[db migrate] ${m.version}: ${m.name} applied`);
       }
     } catch (err) {
       console.error(`[db migrate] ${m.version}: ${m.name} failed:`, err);
       throw err;
     }
+  }
+  if (appliedSet.size > 0) {
+    console.log(`[db] ready at migration v${Math.max(...appliedSet)}`);
   }
 
   const latestMigration = migrations[migrations.length - 1];
@@ -188,6 +377,8 @@ export async function initDb() {
 function parseConfigRow(row: any): HoneypotConfig {
   return {
     guild_id: row.guild_id,
+    name: row.name ?? null,
+    icon: row.icon ?? null,
     log_channel_id: row.log_channel_id ?? null,
     action: ['softban', 'ban', 'disabled'].includes(row.action) ? row.action : 'softban',
     experiments: JSON.parse(row.experiments || '[]'),
@@ -195,7 +386,7 @@ function parseConfigRow(row: any): HoneypotConfig {
 }
 
 export async function getConfig(guild_id: string): Promise<HoneypotConfig | null> {
-  const [row] = await db`SELECT CAST(guild_id AS VARCHAR(20)) AS guild_id, CAST(log_channel_id AS VARCHAR(20)) AS log_channel_id, action, experiments FROM honeypot_config WHERE guild_id = ${guild_id}`;
+  const [row] = await db`SELECT CAST(guild_id AS VARCHAR(20)) AS guild_id, name, icon, CAST(log_channel_id AS VARCHAR(20)) AS log_channel_id, action, experiments FROM honeypot_config WHERE guild_id = ${guild_id}`;
   if (!row) return null;
   return parseConfigRow(row);
 }
@@ -209,6 +400,8 @@ export async function getConfigWithChannels(guild_id: string): Promise<ConfigWit
   const rows = await db`
     SELECT 
       CAST(cfg.guild_id AS VARCHAR(20)) AS guild_id, 
+      cfg.name AS name,
+      cfg.icon AS icon,
       CAST(cfg.log_channel_id AS VARCHAR(20)) AS log_channel_id, 
       cfg.action, 
       cfg.experiments,
@@ -234,13 +427,36 @@ export async function getConfigWithChannels(guild_id: string): Promise<ConfigWit
 
 export async function setConfig(config: HoneypotConfig) {
   await db`
-    INSERT INTO honeypot_config (guild_id, log_channel_id, action, experiments)
-    VALUES (${config.guild_id}, ${config.log_channel_id}, ${config.action}, ${JSON.stringify(config.experiments || [])})
+    INSERT INTO honeypot_config (guild_id, name, icon, log_channel_id, action, experiments, left_at)
+    VALUES (${config.guild_id}, ${config.name ?? null}, ${config.icon ?? null}, ${config.log_channel_id}, ${config.action}, ${JSON.stringify(config.experiments || [])}, 0)
     ON CONFLICT(guild_id) DO UPDATE SET
+      name=excluded.name,
+      icon=excluded.icon,
       log_channel_id=excluded.log_channel_id,
       action=excluded.action,
-      experiments=excluded.experiments
+      experiments=excluded.experiments,
+      left_at=0
   `;
+}
+
+export const LEFT_GRACE_DAYS = 3;
+
+/** Marks a guild as left (data is purged after the grace period). */
+export async function markGuildLeft(guild_id: string): Promise<void> {
+  await db`UPDATE honeypot_config SET left_at = ${Math.floor(Date.now() / 1000)} WHERE guild_id = ${guild_id}`.catch(() => null);
+}
+
+/** Clears the left mark (rejoin during grace period keeps everything). */
+export async function clearGuildLeft(guild_id: string): Promise<void> {
+  await db`UPDATE honeypot_config SET left_at = 0 WHERE guild_id = ${guild_id} AND COALESCE(left_at, 0) != 0`.catch(() => null);
+}
+
+/** Permanently deletes guilds (and their cascading data) left longer than `days` ago. */
+export async function purgeLeftGuilds(days: number = LEFT_GRACE_DAYS): Promise<number> {
+  const cutoff = Math.floor(Date.now() / 1000) - Math.floor(days * 86400);
+  const doomed = await db`SELECT COUNT(*) as count FROM honeypot_config WHERE left_at > 0 AND left_at < ${cutoff}`.catch(() => [{ count: 0 }]);
+  await db`DELETE FROM honeypot_config WHERE left_at > 0 AND left_at < ${cutoff}`.catch(() => null);
+  return Number((doomed as any[])[0]?.count ?? 0);
 }
 
 export async function deleteConfig(guild_id: string) {
@@ -280,6 +496,395 @@ export async function getGuildActionCounts(guild_id: string): Promise<{ ban: num
 export async function getTotalHoneypotChannels(): Promise<number> {
   const [row] = await db`SELECT COUNT(*) as count FROM honeypot_channels`;
   return Number(row.count);
+}
+
+export function hashUserId(user_id: string): string {
+  // One-way hash so the shared list never contains raw user IDs.
+  return new Bun.CryptoHasher("sha256").update(`honeypot:${user_id}`).digest("hex");
+}
+
+export async function addToSharedBanlist(user_id: string, action: 'ban' | 'softban' = 'softban', ttlDays: number = 90): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  await db`INSERT INTO shared_banlist (user_hash, action, created_at, expires_at)
+    VALUES (${hashUserId(user_id)}, ${action}, ${now}, ${now + Math.floor(ttlDays * 86400)})
+    ON CONFLICT(user_hash) DO UPDATE SET action=excluded.action, created_at=excluded.created_at, expires_at=excluded.expires_at`;
+}
+
+export async function isSharedBanned(user_id: string): Promise<{ action: string } | null> {
+  const [row] = await db`SELECT action, expires_at FROM shared_banlist WHERE user_hash = ${hashUserId(user_id)}`;
+  if (!row) return null;
+  if (Number(row.expires_at) < Date.now() / 1000) {
+    await db`DELETE FROM shared_banlist WHERE user_hash = ${hashUserId(user_id)}`.catch(() => null);
+    return null;
+  }
+  return { action: String(row.action || "softban") };
+}
+
+export async function purgeSharedBanlist(): Promise<void> {
+  await db`DELETE FROM shared_banlist WHERE expires_at < ${Math.floor(Date.now() / 1000)}`.catch(() => null);
+}
+
+export type EvasionFingerprint = { username: string | null; global_name: string | null; avatar: string | null };
+
+export async function upsertFingerprint(user_id: string, fp: EvasionFingerprint): Promise<void> {
+  const now = Math.floor(Date.now() / 1000);
+  await db`INSERT INTO evasion_fingerprints (user_id, username, global_name, avatar, last_seen)
+    VALUES (${user_id}, ${fp.username ?? null}, ${fp.global_name ?? null}, ${fp.avatar ?? null}, ${now})
+    ON CONFLICT(user_id) DO UPDATE SET
+      username=excluded.username, global_name=excluded.global_name,
+      avatar=excluded.avatar, last_seen=excluded.last_seen`;
+}
+
+/** Finds a previously moderated account with same avatar+name (ban evasion). */
+export async function findEvasionMatch(
+  user_id: string,
+  fp: EvasionFingerprint,
+  maxAgeDays: number = 180,
+): Promise<{ user_id: string; username: string | null } | null> {
+  if (!fp.avatar) return null; // avatar-less accounts match everyone, too weak
+  const cutoff = Math.floor(Date.now() / 1000) - Math.floor(maxAgeDays * 86400);
+  const rows = await db`SELECT CAST(user_id AS VARCHAR(20)) AS user_id, username FROM evasion_fingerprints
+    WHERE user_id != ${user_id} AND avatar = ${fp.avatar} AND last_seen >= ${cutoff}
+    AND (username = ${fp.username ?? null} OR global_name = ${fp.global_name ?? null}) LIMIT 1`;
+  const row = (rows as any[])[0];
+  if (!row) return null;
+  return { user_id: row.user_id?.toString() ?? "", username: row.username ?? null };
+}
+
+export async function purgeFingerprints(maxAgeDays: number = 180): Promise<void> {
+  const cutoff = Math.floor(Date.now() / 1000) - Math.floor(maxAgeDays * 86400);
+  await db`DELETE FROM evasion_fingerprints WHERE last_seen < ${cutoff}`.catch(() => null);
+}
+
+/** Live usage counts per experiment across all guilds (for smart sorting). */
+export async function getExperimentUsage(): Promise<Record<string, number>> {
+  const counts: Record<string, number> = {};
+  const rows = await db`SELECT experiments FROM honeypot_config WHERE COALESCE(left_at, 0) = 0`.catch(() => []);
+  for (const r of rows as any[]) {
+    try {
+      const list = JSON.parse(r.experiments || "[]");
+      if (Array.isArray(list)) {
+        for (const e of list) {
+          if (typeof e === "string" && e) counts[e] = (counts[e] ?? 0) + 1;
+        }
+      }
+    } catch {
+      // ignore malformed rows
+    }
+  }
+  return counts;
+}
+
+export async function saveDailySnapshot(): Promise<void> {
+  const day = new Date().toISOString().split("T")[0]!;
+  const [meta] = await db`
+    SELECT
+      (SELECT COUNT(*) FROM honeypot_config) AS guilds,
+      (SELECT COUNT(*) FROM honeypot_events) AS moderations
+  ` as any[];
+  await db`INSERT INTO stats_snapshots (day, guilds, moderations)
+    VALUES (${day}, ${Number((meta as any)?.guilds ?? 0)}, ${Number((meta as any)?.moderations ?? 0)})
+    ON CONFLICT(day) DO UPDATE SET guilds=excluded.guilds, moderations=excluded.moderations`;
+}
+
+export async function getHistory90(): Promise<{ date: string; guilds: number; moderations: number }[]> {
+  const rows = await db`SELECT day AS date, guilds, moderations FROM stats_snapshots ORDER BY day DESC LIMIT 90`;
+  return (rows as any[]).reverse().map((r) => ({
+    date: String(r.date),
+    guilds: Number(r.guilds),
+    moderations: Number(r.moderations),
+  }));
+}
+export async function getAllGuildConfigs(): Promise<{ guild_id: string; name: string | null; icon: string | null }[]> {
+  const rows = await db`SELECT CAST(guild_id AS VARCHAR(20)) AS guild_id, name, icon FROM honeypot_config WHERE COALESCE(left_at, 0) = 0 ORDER BY name`;
+  return (rows as any[]).map((r) => ({
+    guild_id: r.guild_id?.toString() ?? "",
+    name: r.name ? String(r.name) : null,
+    icon: r.icon ? String(r.icon) : null,
+  }));
+}
+
+export async function getLogChannels(): Promise<{ guild_id: string; log_channel_id: string }[]> {
+  const rows = await db`SELECT CAST(guild_id AS VARCHAR(20)) AS guild_id, CAST(log_channel_id AS VARCHAR(20)) AS log_channel_id FROM honeypot_config WHERE COALESCE(left_at, 0) = 0 AND log_channel_id IS NOT NULL`;
+  return (rows as any[]).map((r) => ({
+    guild_id: r.guild_id?.toString() ?? "",
+    log_channel_id: r.log_channel_id?.toString() ?? "",
+  }));
+}
+
+export async function getMigrationVersion(): Promise<number> {
+  const rows = await db`SELECT MAX(version) AS v FROM _migrations`.catch(() => [{ v: 0 }]);
+  return Number((rows as any[])[0]?.v ?? 0);
+}
+
+export async function getGlobalRecentEvents(limit: number = 25): Promise<{ id: number; guild_id: string; guild_name: string | null; user_id: string; channel_id: string | null; timestamp: number; action: string | null; reason: string | null }[]> {
+  const safeLimit = Math.min(Math.max(Math.floor(limit) || 25, 1), 100);
+  const rows = await db`SELECT e.id, CAST(e.guild_id AS VARCHAR(20)) AS guild_id, c.name AS guild_name,
+      CAST(e.user_id AS VARCHAR(20)) AS user_id, CAST(e.channel_id AS VARCHAR(20)) AS channel_id,
+      e.timestamp, e.action, e.reason
+    FROM honeypot_events e LEFT JOIN honeypot_config c ON c.guild_id = e.guild_id
+    ORDER BY e.id DESC LIMIT ${safeLimit}`;
+  return (rows as any[]).map((r) => ({
+    id: Number(r.id),
+    guild_id: r.guild_id?.toString() ?? "",
+    guild_name: r.guild_name ? String(r.guild_name) : null,
+    user_id: r.user_id?.toString() ?? "",
+    channel_id: r.channel_id?.toString() ?? null,
+    timestamp: Number(r.timestamp),
+    action: r.action ?? null,
+    reason: r.reason ?? null,
+  }));
+}
+export async function setExperimentForAll(experiment: string, enable: boolean): Promise<{ updated: number; total: number }> {
+  const rows = await db`SELECT CAST(guild_id AS VARCHAR(20)) AS guild_id, experiments FROM honeypot_config WHERE COALESCE(left_at, 0) = 0`;
+  let updated = 0;
+  for (const r of rows as any[]) {
+    let list: string[] = [];
+    try {
+      const parsed = JSON.parse(r.experiments || "[]");
+      if (Array.isArray(parsed)) list = parsed.filter((e) => typeof e === "string");
+    } catch { /* treat as empty */ }
+    const has = list.includes(experiment);
+    if (has === enable) continue;
+    const next = enable ? [...list, experiment] : list.filter((e) => e !== experiment);
+    await db`UPDATE honeypot_config SET experiments = ${JSON.stringify(next)} WHERE guild_id = ${r.guild_id?.toString()}`;
+    updated++;
+  }
+  return { updated, total: (rows as any[]).length };
+}
+
+/** Per-experiment guild lists (which guilds have it enabled). */
+export async function getExperimentStates(): Promise<Record<string, string[]>> {
+  const states: Record<string, string[]> = {};
+  const rows = await db`SELECT CAST(guild_id AS VARCHAR(20)) AS guild_id, experiments FROM honeypot_config WHERE COALESCE(left_at, 0) = 0`.catch(() => []);
+  for (const r of rows as any[]) {
+    try {
+      const list = JSON.parse((r as any).experiments || "[]");
+      if (!Array.isArray(list)) continue;
+      for (const e of list) {
+        if (typeof e !== "string" || !e) continue;
+        (states[e] ??= []).push((r as any).guild_id?.toString() ?? "");
+      }
+    } catch { /* ignore malformed */ }
+  }
+  return states;
+}
+
+export async function setExperimentForGuilds(experiment: string, enable: boolean, guildIds: string[]): Promise<{ updated: number; total: number }> {
+  const ids = [...new Set(guildIds.filter(Boolean))].slice(0, 200);
+  let updated = 0;
+  for (const id of ids) {
+    const [row] = await db`SELECT experiments FROM honeypot_config WHERE guild_id = ${id}`.catch(() => [null]);
+    if (!row) continue;
+    let list: string[] = [];
+    try {
+      const parsed = JSON.parse((row as any).experiments || "[]");
+      if (Array.isArray(parsed)) list = parsed.filter((e) => typeof e === "string");
+    } catch { /* treat as empty */ }
+    const has = list.includes(experiment);
+    if (has === enable) continue;
+    const next = enable ? [...list, experiment] : list.filter((e) => e !== experiment);
+    await db`UPDATE honeypot_config SET experiments = ${JSON.stringify(next)} WHERE guild_id = ${id}`.catch(() => null);
+    updated++;
+  }
+  return { updated, total: ids.length };
+}
+
+export async function getGlobalOverviewStats(): Promise<{ today: number; last7d: number; last30d: number; shared: number; prints: number }> {
+  const now = Math.floor(Date.now() / 1000);
+  const dayStart = Math.floor(new Date(new Date().setUTCHours(0, 0, 0, 0)).getTime() / 1000);
+  const [row] = await db`SELECT
+      (SELECT COUNT(*) FROM honeypot_events WHERE timestamp >= ${dayStart}) AS today,
+      (SELECT COUNT(*) FROM honeypot_events WHERE timestamp >= ${now - 7 * 86400}) AS last7d,
+      (SELECT COUNT(*) FROM honeypot_events WHERE timestamp >= ${now - 30 * 86400}) AS last30d,
+      (SELECT COUNT(*) FROM shared_banlist) AS shared,
+      (SELECT COUNT(*) FROM evasion_fingerprints) AS prints`.catch(() => [{ today: 0, last7d: 0, last30d: 0, shared: 0, prints: 0 }]);
+  const r = (Array.isArray(row) ? row[0] : row) as any;
+  return {
+    today: Number(r?.today ?? 0),
+    last7d: Number(r?.last7d ?? 0),
+    last30d: Number(r?.last30d ?? 0),
+    shared: Number(r?.shared ?? 0),
+    prints: Number(r?.prints ?? 0),
+  };
+}
+
+export async function getConfigsMissingNames(limit: number = 50): Promise<HoneypotConfig[]> {  const safeLimit = Math.min(Math.max(Math.floor(limit) || 50, 1), 200);
+  const rows = await db`SELECT CAST(guild_id AS VARCHAR(20)) AS guild_id, name, icon, CAST(log_channel_id AS VARCHAR(20)) AS log_channel_id, action, experiments FROM honeypot_config WHERE (name IS NULL OR icon IS NULL) AND COALESCE(left_at, 0) = 0 LIMIT ${safeLimit}`;
+  return (rows as any[]).map(parseConfigRow);
+}
+export async function getLeaderboard(limit: number = 10): Promise<{ name: string; icon: string | null; moderations: number }[]> {
+  // Opt-in only: just guilds with the leaderboard experiment.
+  // Names are filtered against the blocklist (no spotlight for trolls).
+  const safeLimit = Math.min(Math.max(Math.floor(limit) || 10, 1), 10);
+  const rows = await db`SELECT c.name AS name, c.icon AS icon, CAST(c.guild_id AS VARCHAR(20)) AS guild_id, COUNT(e.id) AS count
+    FROM honeypot_config c LEFT JOIN honeypot_events e ON e.guild_id = c.guild_id
+    WHERE c.experiments LIKE '%leaderboard%' AND COALESCE(c.left_at, 0) = 0
+    GROUP BY c.guild_id ORDER BY count DESC LIMIT 25`;
+  const all = (rows as any[]).map((r) => {
+    const gid = r.guild_id?.toString() ?? "";
+    const hash = r.icon ? String(r.icon) : null;
+    return {
+      name: r.name ? String(r.name) : "Unknown server",
+      icon: hash && gid ? `https://cdn.discordapp.com/icons/${gid}/${hash}.png?size=64` : null,
+      moderations: Number(r.count),
+    };
+  });
+  const clean: typeof all = [];
+  for (const entry of all) {
+    if (clean.length >= safeLimit) break;
+    if (await isCleanName(entry.name)) clean.push(entry);
+  }
+  return clean;
+}
+
+let badWordsCache: string[] | null = null;
+async function getBadWordsCached(): Promise<string[]> {
+  if (!badWordsCache) {
+    const getBadWords = (await import("./bad-words.macro")).default;
+    badWordsCache = await getBadWords();
+  }
+  return badWordsCache;
+}
+
+/** True when a server name is safe to show publicly. */
+export type PremiumUser = {
+  user_id: string; username: string | null; discord_token: string | null; client_secret: string | null;
+  public_url: string | null; donate_ltc: string | null; status: string; plan: string;
+  expires_at: number; created_at: number; runs: number;
+};
+
+const PREMIUM_GRACE_SEC = 3 * 86400;
+
+function encToken(raw: string | null): string | null {
+  if (!raw) return null;
+  const key = process.env.PREMIUM_SECRET || process.env.DISCORD_TOKEN || "dev-key-change-me";
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  // Node/Bun: aes-256-gcm with Web Crypto would be async; keep it simple via Bun.hash for now and store obfuscated:
+  // actually store as base64 of xor with key hash — good enough for at-rest obfuscation, not a substitute for env isolation
+  const k = new Bun.CryptoHasher("sha256").update(key).digest();
+  let out = new Uint8Array(iv.length + raw.length);
+  out.set(iv);
+  for (let i = 0; i < raw.length; i++) out[iv.length + i] = raw.charCodeAt(i) ^ k[i % k.length]!;
+  return btoa(String.fromCharCode(...out));
+}
+
+function decToken(enc: string | null): string | null {
+  if (!enc) return null;
+  try {
+    const key = process.env.PREMIUM_SECRET || process.env.DISCORD_TOKEN || "dev-key-change-me";
+    const k = new Bun.CryptoHasher("sha256").update(key).digest();
+    const bytes = Uint8Array.from(atob(enc), (c) => c.charCodeAt(0));
+    const ivLen = 12;
+    let raw = "";
+    for (let i = 0; i < bytes.length - ivLen; i++) raw += String.fromCharCode(bytes[ivLen + i]! ^ k[i % k.length]!);
+    return raw;
+  } catch { return null; }
+}
+
+export async function getPremiumUser(user_id: string): Promise<PremiumUser | null> {
+  const [row] = await db`SELECT CAST(user_id AS VARCHAR(20)) AS user_id, username, discord_token, client_secret, public_url, donate_ltc, status, plan, expires_at, created_at, runs FROM premium_users WHERE user_id = ${user_id}`;
+  if (!row) return null;
+  return {
+    user_id: (row as any).user_id?.toString() ?? user_id,
+    username: (row as any).username ?? null,
+    discord_token: decToken((row as any).discord_token),
+    client_secret: decToken((row as any).client_secret),
+    public_url: (row as any).public_url ?? null,
+    donate_ltc: (row as any).donate_ltc ?? null,
+    status: (row as any).status ?? "pending",
+    plan: (row as any).plan ?? "premium",
+    expires_at: Number((row as any).expires_at ?? 0),
+    created_at: Number((row as any).created_at ?? 0),
+    runs: Number((row as any).runs ?? 0),
+  };
+}
+
+export async function upsertPremiumUser(user_id: string, patch: Partial<Pick<PremiumUser, "username" | "discord_token" | "client_secret" | "public_url" | "donate_ltc" | "status" | "plan" | "expires_at">>): Promise<PremiumUser> {
+  const existing = await getPremiumUser(user_id);
+  const now = Math.floor(Date.now() / 1000);
+  const next: PremiumUser = {
+    user_id,
+    username: patch.username ?? existing?.username ?? null,
+    discord_token: patch.discord_token !== undefined ? patch.discord_token : existing?.discord_token ?? null,
+    client_secret: patch.client_secret !== undefined ? patch.client_secret : existing?.client_secret ?? null,
+    public_url: patch.public_url !== undefined ? patch.public_url : existing?.public_url ?? null,
+    donate_ltc: patch.donate_ltc !== undefined ? patch.donate_ltc : existing?.donate_ltc ?? null,
+    status: patch.status ?? existing?.status ?? "pending",
+    plan: patch.plan ?? existing?.plan ?? "premium",
+    expires_at: patch.expires_at ?? existing?.expires_at ?? 0,
+    created_at: existing?.created_at || now,
+    runs: existing?.runs ?? 0,
+  };
+  await db`INSERT INTO premium_users (user_id, username, discord_token, client_secret, public_url, donate_ltc, status, plan, expires_at, created_at, runs)
+    VALUES (${next.user_id}, ${next.username}, ${encToken(next.discord_token)}, ${encToken(next.client_secret)}, ${next.public_url}, ${next.donate_ltc}, ${next.status}, ${next.plan}, ${next.expires_at}, ${next.created_at}, ${next.runs})
+    ON CONFLICT(user_id) DO UPDATE SET username=excluded.username, discord_token=excluded.discord_token, client_secret=excluded.client_secret, public_url=excluded.public_url, donate_ltc=excluded.donate_ltc, status=excluded.status, plan=excluded.plan, expires_at=excluded.expires_at`;
+  return next;
+}
+
+export async function listPremiumUsers(): Promise<PremiumUser[]> {
+  const rows = await db`SELECT CAST(user_id AS VARCHAR(20)) AS user_id, username, discord_token, client_secret, public_url, donate_ltc, status, plan, expires_at, created_at, runs FROM premium_users ORDER BY created_at DESC`;
+  return (rows as any[]).map((r) => ({
+    user_id: r.user_id?.toString() ?? "",
+    username: r.username ?? null,
+    discord_token: decToken(r.discord_token),
+    client_secret: decToken(r.client_secret),
+    public_url: r.public_url ?? null,
+    donate_ltc: r.donate_ltc ?? null,
+    status: r.status ?? "pending",
+    plan: r.plan ?? "premium",
+    expires_at: Number(r.expires_at ?? 0),
+    created_at: Number(r.created_at ?? 0),
+    runs: Number(r.runs ?? 0),
+  }));
+}
+
+export async function isPremiumActive(user_id: string): Promise<boolean> {
+  const u = await getPremiumUser(user_id);
+  if (!u || u.status !== "active") return false;
+  if (!u.expires_at) return true;
+  const now = Math.floor(Date.now() / 1000);
+  if (now < u.expires_at + PREMIUM_GRACE_SEC) return true;
+  return false;
+}
+
+export async function purgeExpiredPremium(): Promise<number> {
+  const cutoff = Math.floor(Date.now() / 1000) - PREMIUM_GRACE_SEC;
+  const doomed = await db`SELECT CAST(user_id AS VARCHAR(20)) AS user_id FROM premium_users WHERE status = 'active' AND expires_at > 0 AND expires_at < ${cutoff}`.catch(() => []);
+  const ids = (doomed as any[]).map((r) => r.user_id?.toString()).filter(Boolean);
+  for (const id of ids) {
+    await db`UPDATE premium_users SET status = 'expired', discord_token = NULL, client_secret = NULL WHERE user_id = ${id}`.catch(() => null);
+    // delete isolated DB file if it exists (best effort)
+    try {
+      const p = `${process.cwd()}/premium_${id}.sqlite`;
+      const f = Bun.file(p);
+      if (await f.exists()) await Bun.write(p, "");
+      await Bun.file(p).unlink?.();
+    } catch { /* ignore */ }
+    try { await Bun.file(`${process.cwd()}/premium_${id}.sqlite-wal`).unlink?.(); } catch { /* ignore */ }
+    try { await Bun.file(`${process.cwd()}/premium_${id}.sqlite-shm`).unlink?.(); } catch { /* ignore */ }
+  }
+  return ids.length;
+}
+
+export async function hasUsedTxid(txid: string): Promise<boolean> {
+  const [row] = await db`SELECT 1 as hit FROM premium_payments WHERE txid = ${txid}`.catch(() => []);
+  return !!row;
+}
+
+export async function recordPremiumPayment(txid: string, user_id: string, ltc_amount: number, eur_amount: number, confirmations: number): Promise<void> {
+  await db`INSERT INTO premium_payments (txid, user_id, ltc_amount, eur_amount, confirmations, verified_at)
+    VALUES (${txid}, ${user_id}, ${ltc_amount}, ${eur_amount}, ${confirmations}, ${Math.floor(Date.now() / 1000)})
+    ON CONFLICT(txid) DO NOTHING`;
+}
+
+export async function isCleanName(name: string): Promise<boolean> {  try {
+    const list = await getBadWordsCached();
+    const words = name.toLowerCase().replace(/[^a-z0-9]/gi, " ").split(/\W+/).filter(Boolean);
+    return !words.some((w) => list.includes(w));
+  } catch {
+    return true; // filter unavailable: show rather than break the page
+  }
 }
 
 export async function getModeratedCount(guild_id: string, channel_id?: string | null): Promise<number> {
@@ -346,7 +951,7 @@ export async function replaceHoneypotChannel(guild_id: string, old_channel_id: s
 }
 
 export async function getStats(): Promise<{ totalGuilds: number; totalModerated: number; }> {
-  const [result] = await db`SELECT (SELECT COUNT(*) FROM honeypot_config) AS config_count, (SELECT COUNT(*) FROM honeypot_events) AS event_count;`;
+  const [result] = await db`SELECT (SELECT COUNT(*) FROM honeypot_config WHERE COALESCE(left_at, 0) = 0) AS config_count, (SELECT COUNT(*) FROM honeypot_events e WHERE EXISTS (SELECT 1 FROM honeypot_config c WHERE c.guild_id = e.guild_id AND COALESCE(c.left_at, 0) = 0)) AS event_count;`;
   return {
     totalGuilds: Number(result.config_count),
     totalModerated: Number(result.event_count),
@@ -453,8 +1058,8 @@ export async function getFullStats(): Promise<{
   const [[meta], events, byActionRows] = await Promise.all([
     db`
       SELECT
-        (SELECT COUNT(*) FROM honeypot_config) AS guilds,
-        (SELECT COUNT(*) FROM honeypot_events) AS moderations
+        (SELECT COUNT(*) FROM honeypot_config WHERE COALESCE(left_at, 0) = 0) AS guilds,
+        (SELECT COUNT(*) FROM honeypot_events e WHERE EXISTS (SELECT 1 FROM honeypot_config c WHERE c.guild_id = e.guild_id AND COALESCE(c.left_at, 0) = 0)) AS moderations
     `,
     db`
       SELECT timestamp, CAST(guild_id AS VARCHAR(20)) AS guild_id

@@ -2,6 +2,7 @@ import type { API } from "@discordjs/core";
 import type { API as API2 } from "@discordjs/core/http-only";
 import { MessageFlags, RESTJSONErrorCodes } from "discord-api-types/v10";
 import randomChannelNames from "../utils/random-channel-names.yaml";
+import { randomChaosName } from "../utils/fancy-fonts";
 import { CUSTOM_EMOJI } from "../utils/constants";
 import type { Cron } from "./crons";
 import { DiscordAPIError } from "@discordjs/rest";
@@ -35,23 +36,29 @@ export async function channelWarmerExperiment(api: API | API2, guildId: string, 
 }
 
 export async function randomChannelNameExperiment(api: API | API2, guildId: string, channelId: string, isChaos = false) {
+    const randomNames = Array.isArray(randomChannelNames) ? randomChannelNames as string[] : ["honeypot"];
     let newName = "honeypot";
     if (isChaos) {
-        const length = Math.floor(Math.random() * 20) + 7;
-        newName = "";
-        const chars = "abcdefghijklmnopqrstuvwxyz0123456789-";
-        for (let i = 0; i < length; i++) {
-            newName += chars.charAt(Math.floor(Math.random() * chars.length));
-        }
+        newName = randomChaosName(randomNames);
     } else {
-        const randomNames = Array.isArray(randomChannelNames) ? randomChannelNames : ["honeypot"]
-        newName = randomNames[Math.floor(Math.random() * randomNames.length)];
+        newName = randomNames[Math.floor(Math.random() * randomNames.length)] ?? "honeypot";
     }
-    await api.channels.edit(
-        channelId,
-        { name: newName },
-        { reason: "Random channel name experiment" + (isChaos ? " (chaos edition)" : "") }
-    );
+    const reason = "Random channel name experiment" + (isChaos ? " (chaos edition)" : "");
+    try {
+        await api.channels.edit(channelId, { name: newName }, { reason });
+    } catch (err) {
+        // exotic unicode chars are sometimes rejected (50035 Invalid Form Body): retry plain
+        if (isChaos && err instanceof DiscordAPIError && (err.code as number) === 50035) {
+            console.log(styleText("dim", `Chaos name rejected, retrying plain: ${err}`));
+            await api.channels.edit(
+                channelId,
+                { name: randomNames[Math.floor(Math.random() * randomNames.length)] ?? "honeypot" },
+                { reason },
+            );
+            return;
+        }
+        throw err;
+    }
 }
 
 async function channelRecreateExperiment(api: API | API2, guildId: string, channelId: string, channelModerated: number, warningMessage: string | undefined, config: HoneypotConfig) {
@@ -60,12 +67,7 @@ async function channelRecreateExperiment(api: API | API2, guildId: string, chann
 
     let newName = channelInfo.name || "honeypot";
     if (config.experiments.includes("random-channel-name-chaos")) {
-        const length = Math.floor(Math.random() * 20) + 7;
-        newName = "";
-        const chars = "abcdefghijklmnopqrstuvwxyz0123456789-";
-        for (let i = 0; i < length; i++) {
-            newName += chars.charAt(Math.floor(Math.random() * chars.length));
-        }
+        newName = randomChaosName(Array.isArray(randomChannelNames) ? randomChannelNames as string[] : ["honeypot"]);
     } else if (config.experiments.includes("random-channel-name")) {
         const randomNames = Array.isArray(randomChannelNames) ? randomChannelNames : ["honeypot"]
         newName = randomNames[Math.floor(Math.random() * randomNames.length)];

@@ -76,11 +76,15 @@ export const docsHtml = `<!DOCTYPE html>
     <tr><td>Only More Recent Delete</td><td>Deletes 15 min of messages instead of 1h</td></tr>
     <tr><td>Many Honeypots</td><td>Use up to 10 honeypot channels</td></tr>
     <tr><td>Channel Warmer</td><td>Keeps the honeypot channel active daily</td></tr>
-    <tr><td>Random Channel Name</td><td>Renames the channel daily (+ chaos variant with random chars)</td></tr>
+    <tr><td>Random Channel Name</td><td>Renames the channel daily (+ chaos variant: random gibberish, fancy fonts or lookalikes)</td></tr>
     <tr><td>Recreate Channel</td><td>Remakes the channel daily (advanced)</td></tr>
     <tr><td>Ensure Message Deletion</td><td>Cleans leftover messages 2 min after moderation (needs message intent)</td></tr>
-    <tr><td>No Warning Msg / No DM</td><td>Skips the channel warning / the DM to the user</td></tr>
+    <tr><td>No Link Filter</td><td>Disables the automatic scam-link deletion (filter is on by default when the message intent is enabled)</td></tr>
+    <tr><td>Alt Detection</td><td>Kicks suspicious joins (ban evaders recognized by name+avatar, accounts younger than 7 days or without avatar) + sends them a DM (opt-in, needs Server Members intent)</td></tr>
+    <tr><td>Shared Banlist</td><td>Kicks known spammers on join + sends them a DM, shares hashed spammer IDs across servers (opt-in, off by default, needs Server Members intent)</td></tr>
+    <tr><td>Leaderboard</td><td>Shows this server by name in the public top-protected ranking (opt-in)</td></tr>
   </table>
+  <p style="margin-top:8px">The scam link filter runs by default (no setup needed) and removes known phishing/IP-logger links plus Discord impersonation domains &mdash; staff messages are never touched.</p>
   </div>
 
   <div class="card">
@@ -95,6 +99,17 @@ export const docsHtml = `<!DOCTYPE html>
   </div>
 
   <div class="card">
+  <h2 id="hacked-account">Hacked account?</h2>
+  <p>If you were removed by the honeypot but didn't post anything yourself, someone may control your account (malware, stolen session, leaked password):</p>
+  <ol>
+    <li>Change your Discord password and sign out all sessions (User Settings &gt; Devices).</li>
+    <li>Enable two-factor authentication (2FA).</li>
+    <li>Scan your device for malware and remove unknown browser extensions/apps (User Settings &gt; Authorized Apps).</li>
+    <li>Still locked out? Contact Discord support: <a href="https://support.discord.com">support.discord.com</a> and ask in our support server for a re-invite.</li>
+  </ol>
+  </div>
+
+  <div class="card">
   <h2>FAQ</h2>
   <h3>Why wasn't an admin banned?</h3>
   <p>By design: owners and admins only trigger a warning so nobody can weaponize the bot against server staff. Test with an alt account.</p>
@@ -102,6 +117,10 @@ export const docsHtml = `<!DOCTYPE html>
   <p>Only IDs and timestamps (server, channel, user, action, time) in a local database. No message content. Details stay with server mods; the public stats page shows aggregates only.</p>
   <h3>How many servers can one bot handle?</h3>
   <p>One instance serves unlimited servers. Sharding is only needed beyond ~2500 servers.</p>
+  <h3>What happens when I kick the bot?</h3>
+  <p>Your settings are kept for 3 days (re-adding restores everything), then permanently deleted.</p>
+  <h3>What happens during a spam raid?</h3>
+  <p>Triggers are deduplicated per user and bans are smoothed to about one per second (burst of 5). From 3 simultaneous cases the log channel shows a live progress message with a final summary.</p>
   </div>
 
   <div class="foot"><a href="/">Stats</a> &middot; <a href="/dashboard">Mod Dashboard</a> &middot; <a href="/health">Health</a> &middot; <a href="/terms">Terms</a> &middot; <a href="/privacy">Privacy</a></div>

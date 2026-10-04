@@ -7,9 +7,12 @@ import { addToDeleteMessageCache, getCommandIdCache, invalidateGuildInfoCache, r
 import randomChannelNames from "../utils/random-channel-names.yaml";
 import { getRoleMemberCounts } from "../utils/discord-api";
 import { DiscordAPIError } from "@discordjs/rest";
-import lookalikeChars from "../utils/lookalike-chars.yaml";
 import { styleText } from "node:util";
-import { hasPermission } from "../utils/tools";
+import { hasPermission, normalizeText, obfuscateText } from "../utils/tools";
+import { getDocsUrl } from "../utils/messages";
+
+const supportUrl = process.env.SUPPORT_URL || "https://discord.gg/6QzDSBXQ6E";
+const githubUrl = process.env.GITHUB_URL || "https://github.com/Julien-winter/honeypot";
 
 const handler: EventHandler<GatewayDispatchEvents.GuildCreate> = {
     event: GatewayDispatchEvents.GuildCreate,
@@ -22,7 +25,11 @@ const handler: EventHandler<GatewayDispatchEvents.GuildCreate> = {
 
             // if we already have config for this server, don't try to recreate (every bot restart creates this event) 
             let config = await db.getConfig(guild.id);
-            if (config) return;
+            if (config) {
+                // rejoin during the 30-day grace period: keep all settings
+                await db.clearGuildLeft(guild.id);
+                return;
+            }
 
             let channelId = null as null | string;
             let msgId = null as null | string;
@@ -57,6 +64,8 @@ const handler: EventHandler<GatewayDispatchEvents.GuildCreate> = {
             }
             await db.setConfig({
                 guild_id: guild.id,
+                name: guild.name ?? null,
+                icon: (guild as { icon?: string | null }).icon ?? null,
                 log_channel_id: null,
                 action: 'softban',
                 experiments: [],
@@ -191,7 +200,7 @@ async function sendIntroMessage(api: API | API2, redis: Bun.RedisClient | undefi
   - Rename this channel to something unique (e.g., \`${newName}\`) so bots can’t easily guess and blacklist it, but keep it clear for real members
   - Keep it near the top of your channel list - bots often target the first few channels
   - Make sure the bot’s highest role is set above any self-assignable roles, so it can act on all users
-- If you have feedback or notice bots bypassing the honeypot, join our [support server](https://discord.gg/haFKuBssU7) or checkout out the [docs](https://honeypot.riskymh.dev/docs) and the open source [github repo](https://github.com/riskymh/honeypot)!
+- If you have feedback or notice bots bypassing the honeypot, join our [support server](${supportUrl}) or checkout out the [docs](${getDocsUrl()}) and the open source [github repo](${githubUrl})!
 `.trim()
             },
             {
@@ -281,37 +290,5 @@ async function checkSetupAndWarn(api: API | API2, channelId: string, application
     }
 }
 
-
-const lookalikesData = lookalikeChars as Record<string, string[] | string>;
-const reverseLookalikeData: Record<string, string> = {};
-for (const [canonicalChar, value] of Object.entries(lookalikesData)) {
-    if (Array.isArray(value)) {
-        for (const variant of value) reverseLookalikeData[variant] = canonicalChar;
-    } else if (typeof value === "string") {
-        reverseLookalikeData[value] = canonicalChar;
-    }
-};
-
-export function obfuscateText(str: string, chance: number = 0.3): string {
-    let result = '';
-    for (const char of str) {
-        const variants = lookalikesData[char];
-        if (variants && variants.length > 0 && Math.random() < chance) {
-            const randomIndex = variants.length === 1 ? 0 : Math.floor(Math.random() * variants.length);
-            result += variants[randomIndex];
-        } else {
-            result += char;
-        }
-    }
-    return result;
-}
-
-export function normalizeText(str: string): string {
-    let result = '';
-    for (const char of str) {
-        result += reverseLookalikeData[char] || char;
-    }
-    return result;
-}
 
 export default handler;

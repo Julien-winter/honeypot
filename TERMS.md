@@ -24,4 +24,4 @@ What is stored and why is described in [PRIVACY.md](./PRIVACY.md). Removing the 
 
 ## 5. Contact
 
-Operator contact: our Discord server (ID `1546167772831285271`).
+Operator contact: our Discord server: https://discord.gg/6QzDSBXQ6E

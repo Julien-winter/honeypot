@@ -1,7 +1,6 @@
 // Self-hosted legal pages (Terms of Service + Privacy Policy).
 // Served by stats-server.ts at GET /terms and /privacy.
 // Needed for Discord app verification (portal links must point here).
-// NOTE: replace [OPERATOR_CONTACT] below with a real contact before publishing.
 
 const layout = (title: string, body: string) => `<!DOCTYPE html>
 <html lang="en">
@@ -62,7 +61,7 @@ export const termsHtml = layout("Terms of Service", `
 <h2>4. Data</h2>
 <p>What is stored and why is described in the <a href="/privacy">Privacy Policy</a>. Removing the bot deletes its per-server configuration automatically.</p>
 <h2>5. Contact</h2>
-<p>Operator contact: our Discord server <a href="https://discord.com/channels/1546167772831285271">Honeypot Support</a></p>
+<p>Operator contact: our Discord server <a href="https://discord.gg/6QzDSBXQ6E">Honeypot Support</a></p>
 `);
 
 export const privacyHtml = layout("Privacy Policy", `
@@ -76,10 +75,16 @@ export const privacyHtml = layout("Privacy Policy", `
 </ul>
 <h2>2. Public statistics</h2>
 <p>The public stats page shows aggregate numbers only (totals, daily counts). No user IDs, names, or per-user data are published.</p>
+<h2>2b. Shared spammer network (opt-in per server)</h2>
+<p>Servers that enable the shared-banlist experiment contribute one-way salted SHA-256 hashes of moderated user IDs (kept max 90 days). No raw IDs, names, or message content are shared. Participating servers check new members against these hashes and may temporarily timeout known spammers.</p>
+<h2>2c. Public leaderboard (opt-in per server)</h2>
+<p>Servers that enable the leaderboard experiment appear by name with their ban count on the public stats page.</p>
+<h2>2d. Ban-evasion detection</h2>
+<p>To recognize returning spammers, the bot stores usernames, display names and avatar IDs of moderated accounts (max 180 days). Matching happens on name plus avatar only — accounts without avatar are never matched. This data is never published.</p>
 <h2>3. Mod dashboard login</h2>
 <p>Optional Discord login (OAuth2, scopes <code>identify</code> + <code>guilds</code>) is used to show moderators their own servers' data. We keep a temporary in-memory session (24h) and store nothing else. Per-server details are only shown to users with ban permissions there.</p>
 <h2>4. Storage &amp; deletion</h2>
-<p>Data lives in a local database on the bot's server. Kicking the bot deletes its configuration for that server automatically. For any other deletion request contact the operator.</p>
+<p>Data lives in a local database on the bot's server. If you kick the bot, your server's data is kept for 3 days (so re-adding restores everything) and then permanently deleted to save storage. For any other deletion request contact the operator.</p>
 <h2>5. Contact</h2>
-<p>Operator contact: our Discord server <a href="https://discord.com/channels/1546167772831285271">Honeypot Support</a></p>
+<p>Operator contact: our Discord server <a href="https://discord.gg/6QzDSBXQ6E">Honeypot Support</a></p>
 `);
